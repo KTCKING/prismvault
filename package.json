@@ -1,0 +1,41 @@
+{
+  "name": "prismvault",
+  "version": "0.1.0",
+  "description": "High-performance image management desktop app",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "dev:tauri": "tauri dev",
+    "build": "vite build",
+    "build:tauri": "tauri build",
+    "build:dmg": "tauri build --bundles dmg",
+    "build:mac": "bash scripts/build-macos.sh",
+    "postbuild:tauri": "node scripts/open-bundle.cjs",
+    "preview": "vite preview",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@crabnebula/tauri-plugin-drag": "^2.1.0",
+    "@solidjs/router": "^0.14.0",
+    "@tanstack/solid-virtual": "^3.0.0",
+    "@tauri-apps/api": "^2.0.0",
+    "@tauri-apps/plugin-dialog": "^2.0.0",
+    "@tauri-apps/plugin-fs": "^2.0.0",
+    "@tauri-apps/plugin-shell": "^2.0.0",
+    "clsx": "^2.1.0",
+    "solid-js": "^1.9.0",
+    "solid-transition-group": "^0.2.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.0.0",
+    "@types/node": "^22.0.0",
+    "autoprefixer": "^10.4.0",
+    "picomatch": "^4.0.7",
+    "postcss": "^8.4.0",
+    "tailwindcss": "^3.4.0",
+    "typescript": "^5.6.0",
+    "vite": "^6.0.0",
+    "vite-plugin-solid": "^2.11.0"
+  }
+}

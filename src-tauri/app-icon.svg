@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000" width="1000" height="1000">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#1e2235"/>
+      <stop offset="100%" stop-color="#0d1018"/>
+    </linearGradient>
+    <linearGradient id="prismFace" x1="0.1" y1="0" x2="0.9" y2="1">
+      <stop offset="0%" stop-color="#eaf0ff" stop-opacity="0.95"/>
+      <stop offset="55%" stop-color="#9fb4ff" stop-opacity="0.85"/>
+      <stop offset="100%" stop-color="#5c7cfa" stop-opacity="0.9"/>
+    </linearGradient>
+    <linearGradient id="prismSide" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#3a4a7a" stop-opacity="0.95"/>
+      <stop offset="100%" stop-color="#22284a" stop-opacity="0.95"/>
+    </linearGradient>
+    <linearGradient id="beam" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0.9"/>
+    </linearGradient>
+    <linearGradient id="rainbow" x1="0" y1="0" x2="1" y2="0.35">
+      <stop offset="0%" stop-color="#ff5d5d"/>
+      <stop offset="20%" stop-color="#ffb454"/>
+      <stop offset="42%" stop-color="#ffe94a"/>
+      <stop offset="62%" stop-color="#57d68a"/>
+      <stop offset="80%" stop-color="#4aa8ff"/>
+      <stop offset="100%" stop-color="#a06bff"/>
+    </linearGradient>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="14" result="b"/>
+      <feMerge>
+        <feMergeNode in="b"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="softglow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="26"/>
+    </filter>
+  </defs>
+
+  <!-- Background rounded square -->
+  <rect x="0" y="0" width="1000" height="1000" rx="224" fill="url(#bg)"/>
+  <rect x="0.5" y="0.5" width="999" height="999" rx="223.5" fill="none" stroke="#ffffff" stroke-opacity="0.06" stroke-width="1"/>
+
+  <!-- Soft ambient glow behind prism -->
+  <ellipse cx="500" cy="560" rx="250" ry="180" fill="#5c7cfa" opacity="0.28" filter="url(#softglow)"/>
+
+  <!-- Incoming white beam (from upper-left) -->
+  <path d="M120 300 L372 452" stroke="url(#beam)" stroke-width="26" stroke-linecap="round" opacity="0.85" filter="url(#glow)"/>
+
+  <!-- Prism (triangle) -->
+  <g filter="url(#glow)">
+    <polygon points="500,250 336,700 664,700" fill="url(#prismFace)"/>
+    <polygon points="500,250 500,700 664,700" fill="url(#prismSide)" opacity="0.55"/>
+    <polygon points="500,250 336,700 664,700" fill="none" stroke="#dfe7ff" stroke-opacity="0.7" stroke-width="6" stroke-linejoin="round"/>
+  </g>
+
+  <!-- Refracted rainbow beam (exiting to the right) -->
+  <g filter="url(#glow)">
+    <path d="M600 470 L880 372" stroke="url(#rainbow)" stroke-width="30" stroke-linecap="round" opacity="0.95"/>
+  </g>
+
+  <!-- Small sparkles -->
+  <circle cx="300" cy="230" r="9" fill="#ffffff" opacity="0.85"/>
+  <circle cx="860" cy="250" r="7" fill="#ffffff" opacity="0.7"/>
+  <circle cx="792" cy="700" r="6" fill="#ffffff" opacity="0.5"/>
+</svg>
