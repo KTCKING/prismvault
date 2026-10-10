@@ -1,8 +1,8 @@
 [package]
 name = "prismvault"
-version = "0.1.0"
+version = "0.2.0"
 description = "High-performance image management desktop app"
-authors = ["PrismVault"]
+authors = ["KTCKING"]
 edition = "2021"
 rust-version = "1.77"
 
