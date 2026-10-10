@@ -223,11 +223,16 @@ pub async fn get_thumbnail_path(
     });
 
     let thumb_path = lib.thumbnail.thumbnail_path(&hash, 512);
-    
-    // Generate thumbnail on-the-fly if missing
+
+    // Generate the thumbnail on the fly when it is missing. If generation
+    // fails — e.g. the decoder cannot handle the format (HEIC / RAW are common
+    // on macOS) — fall back to returning the ORIGINAL file path so the WebView
+    // can still render it with its own decoder instead of showing a blank card.
     if !thumb_path.exists() {
         let source = std::path::Path::new(&file_path);
-        let _ = lib.thumbnail.generate(source, &hash);
+        if lib.thumbnail.generate(source, &hash).is_err() || !thumb_path.exists() {
+            return Ok(file_path);
+        }
     }
 
     Ok(thumb_path.to_string_lossy().to_string())

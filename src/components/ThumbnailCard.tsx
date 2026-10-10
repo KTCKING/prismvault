@@ -1,4 +1,4 @@
-import { createSignal, Show, onMount } from "solid-js";
+import { createSignal, createEffect, Show, onMount, onCleanup } from "solid-js";
 import type { FileInfo } from "@/lib/tauri-api";
 import { convertFileSrc } from "@tauri-apps/api/core";
 
@@ -19,20 +19,55 @@ export function ThumbnailCard(props: Props) {
   const [showRating, setShowRating] = createSignal(false);
   const [imgLoaded, setImgLoaded] = createSignal(false);
   const [imgError, setImgError] = createSignal(false);
+  // The image the <img> currently points at. Starts on the thumbnail (or the
+  // original file when no thumbnail is ready yet) and degrades to the original
+  // file if the thumbnail cannot be loaded (missing / undecodable format).
+  const [imgSrc, setImgSrc] = createSignal("");
 
-  onMount(() => props.onVisible());
+  let rootRef!: HTMLDivElement;
 
-  const formatSize = (bytes: number) => {
-    if (bytes < 1024) return `${bytes}B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
-    return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+  const originalSrc = () => convertFileSrc(props.file.path);
+  const preferredSrc = () => {
+    const url = props.thumbnailUrl;
+    return url && url !== "/placeholder.svg" ? convertFileSrc(url) : originalSrc();
   };
 
-  const getThumbSrc = () => {
-    if (props.thumbnailUrl && props.thumbnailUrl !== "/placeholder.svg") {
-      return convertFileSrc(props.thumbnailUrl);
+  createEffect(() => {
+    setImgSrc(preferredSrc());
+    setImgError(false);
+    setImgLoaded(false);
+  });
+
+  onMount(() => {
+    // Load the thumbnail lazily once the card scrolls into view. Previously
+    // only the first 30 cards ever requested one, so everything further down
+    // fell back to decoding the full-size original image.
+    if (typeof IntersectionObserver === "undefined") {
+      props.onVisible();
+      return;
     }
-    return convertFileSrc(props.file.path);
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) {
+          props.onVisible();
+          io.disconnect();
+        }
+      },
+      { rootMargin: "400px" },
+    );
+    io.observe(rootRef);
+    onCleanup(() => io.disconnect());
+  });
+
+  const handleImgError = () => {
+    const orig = originalSrc();
+    if (imgSrc() !== orig) {
+      // Thumbnail failed to load -> fall back to the original file.
+      setImgSrc(orig);
+      setImgLoaded(false);
+    } else {
+      setImgError(true);
+    }
   };
 
   const handleClick = (e: MouseEvent) => {
@@ -41,8 +76,14 @@ export function ThumbnailCard(props: Props) {
     props.onOpen();
   };
 
+  const formatSize = (bytes: number) => {
+    if (bytes < 1024) return `${bytes}B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+  };
+
   return (
-    <div class="thumbnail-card" classList={{ selected: props.isSelected }}
+    <div ref={rootRef} class="thumbnail-card" classList={{ selected: props.isSelected }}
       data-path={props.file.path}
       style={{ height: `${props.size + 40}px` }}
       onClick={handleClick}
@@ -53,11 +94,11 @@ export function ThumbnailCard(props: Props) {
 
       <div class="relative overflow-hidden" style={{ background: "var(--bg-tertiary)", height: `${props.size}px` }}>
         <Show when={!imgError()}>
-          <img src={getThumbSrc()} alt={props.file.filename}
+          <img src={imgSrc()} alt={props.file.filename}
             class="w-full h-full object-cover transition-opacity duration-200"
             classList={{ "opacity-0": !imgLoaded(), "opacity-100": imgLoaded() }}
             draggable={false}
-            onLoad={() => setImgLoaded(true)} onError={() => setImgError(true)} loading="lazy" />
+            onLoad={() => setImgLoaded(true)} onError={handleImgError} loading="lazy" />
         </Show>
         <Show when={!imgLoaded() && !imgError()}>
           <div class="absolute inset-0 skeleton" />

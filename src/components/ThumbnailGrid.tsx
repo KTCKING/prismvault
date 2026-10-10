@@ -493,7 +493,7 @@ export function ThumbnailGrid() {
                     onRatingChange={(r) => files.updateRating(file.path, r)}
                     onOpen={() => { ui.setInfoPanelFile(file.path); ui.setInfoPanelOpen(true); }}
                     onDoubleClick={() => viewer.open(files.files(), index())}
-                    onVisible={() => { if (index() < 30) loadThumbnail(file.path); }}
+                    onVisible={() => loadThumbnail(file.path)}
                     onContextMenu={openFileContextMenu} />
                 )}
               </For>
@@ -515,7 +515,7 @@ export function ThumbnailGrid() {
                       onRatingChange={(r) => files.updateRating(file.path, r)}
                       onOpen={() => { ui.setInfoPanelFile(file.path); ui.setInfoPanelOpen(true); }}
                       onDoubleClick={() => viewer.open(files.files(), index())}
-                      onVisible={() => { if (index() < 30) loadThumbnail(file.path); }}
+                      onVisible={() => loadThumbnail(file.path)}
                       onContextMenu={openFileContextMenu} />
                   </div>
                 )}
@@ -538,10 +538,21 @@ export function ThumbnailGrid() {
                   >
                     <div class="w-10 h-10 flex-shrink-0 rounded overflow-hidden" style={{ background: "var(--bg-tertiary)" }}>
                       <img
+                        ref={() => loadThumbnail(file.path)}
                         src={thumbnailUrls()[file.path] && thumbnailUrls()[file.path] !== "/placeholder.svg"
                           ? convertFileSrc(thumbnailUrls()[file.path]) : "/placeholder.svg"}
                         alt={file.filename} class="w-full h-full object-cover" loading="lazy" draggable={false}
-                        onError={(e) => { (e.currentTarget as HTMLImageElement).src = "/placeholder.svg"; }}
+                        onError={(e) => {
+                          // Thumbnail failed -> try the original file; if that also
+                          // fails, show the placeholder.
+                          const el = e.currentTarget as HTMLImageElement;
+                          if (!el.dataset.fallback) {
+                            el.dataset.fallback = "1";
+                            el.src = convertFileSrc(file.path);
+                          } else {
+                            el.src = "/placeholder.svg";
+                          }
+                        }}
                       />
                     </div>
                     <div class="flex-1 min-w-0">

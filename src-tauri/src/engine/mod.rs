@@ -45,6 +45,13 @@ pub struct Engine {
 impl Engine {
     pub fn new() -> Self {
         let data_dir = Self::get_data_dir().unwrap_or_else(|| PathBuf::from("."));
+        // Ensure the app data directory exists before anything tries to write
+        // into it. `libraries.json` — the record of which libraries the user
+        // opened — lives here, and `std::fs::write` fails *silently* when its
+        // parent directory is missing. macOS never has this directory created
+        // for local libraries, so the app used to forget every library on the
+        // next launch (Windows happened to work because the folder existed).
+        let _ = std::fs::create_dir_all(&data_dir);
         Engine {
             libraries: HashMap::new(),
             library_order: Vec::new(),
