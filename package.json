@@ -1,6 +1,6 @@
 {
   "name": "prismvault",
-  "version": "0.2.0",
+  "version": "0.1.0",
   "description": "High-performance image management desktop app",
   "private": true,
   "type": "module",
