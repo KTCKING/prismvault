@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::fs;
 use std::io::Read;
 
+#[derive(Clone)]
 pub struct ThumbnailEngine {
     cache_dir: PathBuf,
     grid_size: u32,
@@ -45,12 +46,19 @@ impl ThumbnailEngine {
         Ok(thumb_path)
     }
 
-    /// Extract EXIF thumbnail from JPEG by parsing APP1 marker
+    /// Extract EXIF thumbnail from JPEG by parsing APP1 marker.
+    ///
+    /// Only the head of the file is read (EXIF lives right after SOI), which
+    /// keeps this near-instant even for 30 MB originals — reading the whole
+    /// file was the single most expensive part of the old code path.
     fn try_exif_thumbnail(&self, source: &Path, dest: &Path) -> Result<(), String> {
         let ext = source.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
         if ext != "jpg" && ext != "jpeg" { return Err("Not JPEG".into()); }
 
-        let data = fs::read(source).map_err(|e| e.to_string())?;
+        const HEAD_CAP: u64 = 1024 * 1024; // 1 MiB is plenty for EXIF + embedded thumbnail
+        let file = fs::File::open(source).map_err(|e| e.to_string())?;
+        let mut data = Vec::new();
+        file.take(HEAD_CAP).read_to_end(&mut data).map_err(|e| e.to_string())?;
         if data.len() < 20 { return Err("Too small".into()); }
 
         // Find APP1 marker (0xFFE1) containing "Exif\0\0"
@@ -96,28 +104,47 @@ impl ThumbnailEngine {
                     let entry_pos = ifd1_pos + 2 + i * 12;
                     if entry_pos + 12 > data.len() { break; }
                     let tag = read_u16(entry_pos);
-                    let len = read_u32(entry_pos + 4) as usize;
-                    let val = read_u32(entry_pos + 8) as usize;
-                    // JPEGInterchangeFormat (0x0201) = offset, JPEGInterchangeFormatLength (0x0202) = length
-                    if tag == 0x0201 { thumb_offset = Some(val); }
-                    if tag == 0x0202 { thumb_len = Some(len.min(val)); }
+                    // IFD 条目结构：[tag u16][type u16][count u32][value u32]。
+                    // JPEGInterchangeFormat / ...Length 都是 LONG(4) 且 count=1，
+                    // 所以偏移和长度都在 `value` 字段里 —— 以前这里取的是 count
+                    // （恒等于 1），`len > 1024` 永远不成立，EXIF 快路径形同虚设，
+                    // 每张图都退化成整图解码。
+                    let value = read_u32(entry_pos + 8) as usize;
+                    if tag == 0x0201 { thumb_offset = Some(value); }
+                    if tag == 0x0202 { thumb_len = Some(value); }
                 }
 
                 if let (Some(off), Some(len)) = (thumb_offset, thumb_len) {
-                    if off + len <= data.len() && len > 1024 {
+                    if len > 1024 && off + len <= data.len() {
                         let thumb_data = &data[off..off+len];
                         let jpeg_path = dest.with_extension("jpg");
-                        if len < 100 * 1024 {
-                            if let Ok(img) = image::load_from_memory(thumb_data) {
-                                let resized = img.resize(self.grid_size, self.grid_size, image::imageops::FilterType::Triangle);
-                                let mut jpeg = Vec::new();
-                                let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 75);
-                                enc.encode(&resized.to_rgb8(), resized.width(), resized.height(), image::ColorType::Rgb8.into())
-                                    .map_err(|e| format!("JPEG encode: {}", e))?;
-                                fs::write(&jpeg_path, &jpeg).map_err(|e| e.to_string())?;
-                            }
+
+                        // 解码失败必须返回 Err（而不是假装成功），否则调用方会
+                        // 拿到一个并不存在的缩略图路径，卡片就是空白。
+                        let img = image::load_from_memory(thumb_data)
+                            .map_err(|e| format!("Embedded EXIF thumbnail undecodable: {e}"))?;
+
+                        // 很多老图 / 扫描件的内嵌缩略图只有 160×120，放大到网格
+                        // 尺寸只会更糊 —— 这种情况宁可整图解码一次保证画质。
+                        if img.width().max(img.height()) < 256 {
+                            return Err("EXIF thumbnail too small".into());
+                        }
+
+                        // 已经比目标小就别放大了。
+                        let resized = if img.width() > self.grid_size || img.height() > self.grid_size {
+                            img.resize(self.grid_size, self.grid_size, image::imageops::FilterType::Triangle)
                         } else {
-                            fs::write(&jpeg_path, thumb_data).map_err(|e| e.to_string())?;
+                            img
+                        };
+
+                        let mut jpeg = Vec::new();
+                        let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 75);
+                        enc.encode(&resized.to_rgb8(), resized.width(), resized.height(), image::ColorType::Rgb8.into())
+                            .map_err(|e| format!("JPEG encode: {}", e))?;
+                        fs::write(&jpeg_path, &jpeg).map_err(|e| e.to_string())?;
+
+                        if !jpeg_path.exists() {
+                            return Err("EXIF thumbnail not written".into());
                         }
                         return Ok(());
                     }

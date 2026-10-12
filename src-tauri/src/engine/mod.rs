@@ -1,6 +1,7 @@
 pub mod db;
 pub mod indexer;
 pub mod thumbnail;
+pub mod thumbs;
 pub mod watcher;
 pub mod search;
 pub mod dedup;

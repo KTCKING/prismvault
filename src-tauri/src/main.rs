@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use prismvault_lib::{AppState, commands};
+use tauri::Manager;
 
 fn main() {
     tracing_subscriber::fmt()
@@ -16,6 +17,11 @@ fn main() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
         .manage(app_state)
+        .setup(|app| {
+            // 后台缩略图任务需要 AppHandle 才能把进度/结果推给前端。
+            app.state::<AppState>().thumbs.set_app(app.handle().clone());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::library::open_library,
             commands::library::create_library,
@@ -38,6 +44,8 @@ fn main() {
             commands::files::purge_file,
             commands::files::empty_trash,
             commands::files::get_thumbnail_path,
+            commands::files::get_thumbnail_progress,
+            commands::files::build_missing_thumbnails,
             commands::files::open_in_explorer,
             commands::files::open_file,
             commands::files::copy_files_to_clipboard,

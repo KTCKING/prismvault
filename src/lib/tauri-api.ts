@@ -111,8 +111,15 @@ async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Promi
       return null as unknown as T;
 
     case "get_thumbnail_path": {
-      return "/placeholder.svg" as unknown as T;
+      return { status: "ready", path: "/placeholder.svg" } as unknown as T;
     }
+
+    case "get_thumbnail_progress": {
+      return { total: 0, done: 0, running: false } as unknown as T;
+    }
+
+    case "build_missing_thumbnails":
+      return 0 as unknown as T;
 
     case "get_all_tags": {
       return mockTags as unknown as T;
@@ -245,6 +252,29 @@ export interface PaginatedFiles {
   limit: number;
 }
 
+/** 缩略图查询结果。
+ *  - `ready`：path 是缩略图文件
+ *  - `fallback`：这张图生成不出缩略图（RAW/PSD 等），path 是原图
+ *  - `pending`：已排进后台队列，稍后会收到 `thumb-ready` 事件
+ */
+export interface ThumbnailResult {
+  status: "ready" | "fallback" | "pending";
+  path: string;
+}
+
+/** 后台缩略图任务的进度。 */
+export interface ThumbProgress {
+  total: number;
+  done: number;
+  running: boolean;
+}
+
+/** `thumb-ready` 事件的载荷元素。`thumb` 为 null 表示生成失败、应退回原图。 */
+export interface ThumbReadyItem {
+  path: string;
+  thumb: string | null;
+}
+
 export interface NasStatus {
   status: "local" | "online" | "degraded" | "offline";
   latency_ms: number;
@@ -350,7 +380,13 @@ export const api = {
     invoke<number>("empty_trash", { libraryId }),
 
   getThumbnailPath: (libraryId: string, filePath: string) =>
-    invoke<string>("get_thumbnail_path", { libraryId, filePath }),
+    invoke<ThumbnailResult>("get_thumbnail_path", { libraryId, filePath }),
+
+  getThumbnailProgress: () =>
+    invoke<ThumbProgress>("get_thumbnail_progress"),
+
+  buildMissingThumbnails: (libraryId: string) =>
+    invoke<number>("build_missing_thumbnails", { libraryId }),
 
   openInExplorer: (filePath: string) =>
     invoke<void>("open_in_explorer", { filePath }),

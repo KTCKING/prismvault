@@ -369,6 +369,26 @@ impl Database {
         self.conn.query_row(&sql, params_refs.as_slice(), |row| row.get(0))
     }
 
+    /// Every live file path (plus whatever content hash it has) — used to work
+    /// out which thumbnails still need to be generated. Metadata only: this is
+    /// a single indexed query and never touches the image files themselves.
+    ///
+    /// 按 `mtime DESC` 排序 —— 与网格默认排序一致，这样后台任务会先处理用户
+    /// 一打开就看到的那些图，首屏几秒内就填满，而不是等最后一屏。
+    pub fn list_files_for_thumbs(&self) -> SqlResult<Vec<(String, Option<String>)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT path, blake3_hash FROM files WHERE is_deleted = 0 ORDER BY mtime DESC")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
     pub fn update_file_rating(&self, path: &str, rating: i32) -> SqlResult<()> {
         self.conn.execute(
             "UPDATE files SET rating = ?1, updated_at = datetime('now') WHERE path = ?2",

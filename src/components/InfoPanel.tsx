@@ -1,18 +1,72 @@
-import { createSignal, Show, createResource, createEffect, on, onMount, For } from "solid-js";
+import { createSignal, Show, For, createResource, createEffect, on, onMount } from "solid-js";
+import type { JSX } from "solid-js";
 import { api } from "@/lib/tauri-api";
-import { activeLibraryId } from "@/stores/library";
+import { activeLibraryId, useLibraryStore } from "@/stores/library";
 import { useTagsStore } from "@/stores/tags";
 import { useFilesStore } from "@/stores/files";
 import { convertFileSrc } from "@tauri-apps/api/core";
 
 interface Props {
-  filePath: string;
+  /** 当前展示的文件；为 null 时面板显示「未选择文件 + 图库文件数」。 */
+  filePath: string | null;
   onClose: () => void;
+}
+
+/** 可折叠分区（Pixcall 右侧信息区就是这种可折叠的分组）。 */
+function Section(props: {
+  title: string;
+  open: boolean;
+  onToggle: () => void;
+  children: JSX.Element;
+}) {
+  return (
+    <div class="info-section">
+      <button
+        class="w-full flex items-center gap-1.5 px-3 py-2 text-left"
+        onClick={props.onToggle}
+      >
+        <span
+          class="text-2xs transition-transform duration-150"
+          style={{
+            color: "var(--text-muted)",
+            transform: props.open ? "rotate(90deg)" : "none",
+          }}
+        >▶</span>
+        <span class="text-2xs font-semibold tracking-wide" style={{ color: "var(--text-secondary)" }}>
+          {props.title}
+        </span>
+      </button>
+      <Show when={props.open}>
+        <div class="pb-2.5">{props.children}</div>
+      </Show>
+    </div>
+  );
+}
+
+/** 一行属性：左标签 / 右值（Pixcall 的信息区排版）。 */
+function Row(props: { label: string; title?: string; children: JSX.Element }) {
+  return (
+    <div class="info-row">
+      <span class="info-row-label">{props.label}</span>
+      <div class="info-row-value" title={props.title}>{props.children}</div>
+    </div>
+  );
+}
+
+/** 一行区块：标签在上、内容在下（标签 / 描述这类需要整行宽度的字段）。 */
+function Block(props: { label: string; children: JSX.Element }) {
+  return (
+    <div class="px-3 py-1">
+      <div class="text-2xs mb-1" style={{ color: "var(--text-muted)" }}>{props.label}</div>
+      {props.children}
+    </div>
+  );
 }
 
 export function InfoPanel(props: Props) {
   const tags = useTagsStore();
   const files = useFilesStore();
+  const library = useLibraryStore();
 
   const [notes, setNotes] = createSignal("");
   const [editingNotes, setEditingNotes] = createSignal(false);
@@ -20,9 +74,15 @@ export function InfoPanel(props: Props) {
   const [newTagName, setNewTagName] = createSignal("");
   const [busy, setBusy] = createSignal(false);
 
+  const [openInfo, setOpenInfo] = createSignal(true);
+  const [openMeta, setOpenMeta] = createSignal(true);
+
   const [fileInfo, { refetch }] = createResource(
     () => ({ libId: activeLibraryId(), path: props.filePath }),
-    async ({ libId, path }) => { if (!libId) return null; return api.getFileInfo(libId, path); }
+    async ({ libId, path }) => {
+      if (!libId || !path) return null;
+      return api.getFileInfo(libId, path);
+    }
   );
 
   onMount(() => { tags.loadTags(); });
@@ -59,9 +119,12 @@ export function InfoPanel(props: Props) {
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
   };
 
+  /** 所在文件夹（去掉最后一段文件名）。 */
+  const parentDir = (path: string) => path.replace(/[\\/][^\\/]*$/, "") || path;
+
   const handleSaveNotes = async () => {
     const libId = activeLibraryId();
-    if (!libId) return;
+    if (!libId || !props.filePath) return;
     setBusy(true);
     try {
       await api.updateFileNotes(libId, props.filePath, notes());
@@ -74,7 +137,7 @@ export function InfoPanel(props: Props) {
 
   const handleRating = async (star: number) => {
     const libId = activeLibraryId();
-    if (!libId) return;
+    if (!libId || !props.filePath) return;
     const current = fileInfo()?.rating || 0;
     await api.updateFileRating(libId, props.filePath, current >= star ? 0 : star);
     await refetch();
@@ -82,7 +145,7 @@ export function InfoPanel(props: Props) {
 
   const handleAddTag = async (tagId: number) => {
     const libId = activeLibraryId();
-    if (!libId) return;
+    if (!libId || !props.filePath) return;
     setBusy(true);
     try {
       await api.addTagToFile(libId, props.filePath, tagId);
@@ -95,7 +158,7 @@ export function InfoPanel(props: Props) {
 
   const handleRemoveTag = async (tagId: number) => {
     const libId = activeLibraryId();
-    if (!libId) return;
+    if (!libId || !props.filePath) return;
     setBusy(true);
     try {
       await api.removeTagFromFile(libId, props.filePath, tagId);
@@ -115,157 +178,181 @@ export function InfoPanel(props: Props) {
   };
 
   const s = {
-    bg: "var(--bg-secondary)",
-    border: "var(--border-color)",
     text: "var(--text-primary)",
     muted: "var(--text-muted)",
     accent: "var(--accent)",
+    border: "var(--border-color)",
     tertiary: "var(--bg-tertiary)",
+    hover: "var(--bg-hover)",
   };
 
+  const libFileCount = () => library.activeLibrary()?.file_count ?? files.totalFiles();
+
   return (
-    <aside class="info-panel absolute inset-y-0 right-0 z-30 w-80 flex flex-col overflow-hidden animate-slide-in-right shadow-2xl">
-      <div class="flex items-center justify-between px-4 py-3" style={{ borderBottom: `1px solid ${s.border}` }}>
-        <span class="text-sm font-medium" style={{ color: s.text }}>信息</span>
-        <button class="btn-ghost text-xs px-1.5" onClick={props.onClose}>✕</button>
+    <aside class="info-panel absolute inset-y-0 right-0 z-30 w-[19rem] flex flex-col overflow-hidden animate-slide-in-right shadow-2xl">
+      {/* 头部 */}
+      <div class="flex items-center h-9 pl-3 pr-1.5 flex-shrink-0" style={{ borderBottom: `1px solid ${s.border}` }}>
+        <span class="text-xs font-semibold" style={{ color: s.text }}>文件信息</span>
+        <div class="flex-1" />
+        <button class="btn-ghost text-2xs px-1.5 py-0.5" title="展开／折叠全部分区"
+          onClick={() => {
+            const next = !(openInfo() && openMeta());
+            setOpenInfo(next);
+            setOpenMeta(next);
+          }}>⇕</button>
+        <button class="btn-ghost text-xs px-1.5 py-0.5" title="关闭" onClick={props.onClose}>✕</button>
       </div>
 
-      <Show when={fileInfo()} fallback={<div class="p-4 text-xs" style={{ color: s.muted }}>加载中...</div>}>
-        {(info) => (
+      {/* 未选择文件：只显示图库文件数量（Pixcall 也是如此） */}
+      <Show when={props.filePath} fallback={
+        <div class="flex-1 flex flex-col items-center justify-center gap-1.5 px-6 text-center">
+          <div class="text-3xl opacity-50">🖼️</div>
+          <p class="text-xs" style={{ color: s.muted }}>未选择文件</p>
+          <p class="text-sm font-medium" style={{ color: s.text }}>
+            当前图库 {libFileCount()} 个文件
+          </p>
+          <Show when={files.selectedFiles().size > 0}>
+            <p class="text-2xs" style={{ color: s.accent }}>已选 {files.selectedFiles().size} 个</p>
+          </Show>
+        </div>
+      }>
+        {(path) => (
           <div class="flex-1 overflow-y-auto">
-            <div class="aspect-square flex items-center justify-center" style={{ background: s.tertiary }}>
-              <img src={convertFileSrc(props.filePath)} alt={info().filename}
+            {/* 预览 */}
+            <div class="flex items-center justify-center flex-shrink-0"
+              style={{ background: s.tertiary, height: "13rem" }}>
+              <img src={convertFileSrc(path())} alt=""
                 class="max-w-full max-h-full object-contain" draggable={false}
-                onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }} />
+                onError={(e) => { (e.currentTarget as HTMLImageElement).style.visibility = "hidden"; }} />
             </div>
 
-            <div class="p-4 space-y-3">
-              <div><label class="text-2xs uppercase" style={{ color: s.muted }}>文件名</label>
-                <p class="text-sm break-all" style={{ color: s.text }}>{info().filename}</p></div>
+            <Show when={fileInfo()} fallback={
+              <div class="p-4 text-xs" style={{ color: s.muted }}>加载中...</div>
+            }>
+              {(info) => (
+                <>
+                  {/* 文件信息 */}
+                  <Section title="文件信息" open={openInfo()} onToggle={() => setOpenInfo(!openInfo())}>
+                    <Row label="文件名" title={info().filename}>
+                      <span class="allow-select">{info().filename}</span>
+                    </Row>
 
-              <div class="grid grid-cols-2 gap-2">
-                <div><label class="text-2xs uppercase" style={{ color: s.muted }}>尺寸</label>
-                  <p class="text-sm" style={{ color: s.text }}>{info().width && info().height ? `${info().width} × ${info().height}` : "未知"}</p></div>
-                <div><label class="text-2xs uppercase" style={{ color: s.muted }}>大小</label>
-                  <p class="text-sm" style={{ color: s.text }}>{formatSize(info().size_bytes)}</p></div>
-                <div><label class="text-2xs uppercase" style={{ color: s.muted }}>格式</label>
-                  <p class="text-sm uppercase" style={{ color: s.text }}>{info().extension}</p></div>
-              </div>
+                    <Block label="标签">
+                      <div class="flex flex-wrap gap-1">
+                        <Show when={info().tags.length > 0} fallback={<span class="text-2xs" style={{ color: s.muted }}>暂无标签</span>}>
+                          <For each={info().tags}>
+                            {(tag) => (
+                              <span class="tag-pill text-white" style={{ background: tag.color || "#6c757d" }}>
+                                {tag.name}
+                                <button class="ml-1 text-white/60 hover:text-white"
+                                  title="移除标签"
+                                  onClick={() => handleRemoveTag(tag.id)}>×</button>
+                              </span>
+                            )}
+                          </For>
+                        </Show>
+                        <button class="tag-pill" style={{ background: s.tertiary, color: s.muted }}
+                          onClick={() => setShowTagPicker(!showTagPicker())}>
+                          {showTagPicker() ? "收起" : "+ 标签"}
+                        </button>
+                      </div>
 
-              <div>
-                <label class="text-2xs uppercase" style={{ color: s.muted }}>时间信息</label>
-                <div class="mt-1 space-y-1">
-                  <div class="flex items-baseline gap-2">
-                    <span class="text-2xs flex-shrink-0" style={{ width: "3.75rem", color: s.muted }}>创建时间</span>
-                    <span class="text-xs tabular-nums" style={{ color: s.text }}>{fmtTime(info().ctime)}</span>
-                  </div>
-                  <div class="flex items-baseline gap-2">
-                    <span class="text-2xs flex-shrink-0" style={{ width: "3.75rem", color: s.muted }}>修改时间</span>
-                    <span class="text-xs tabular-nums" style={{ color: s.text }}>{fmtTime(info().mtime)}</span>
-                  </div>
-                  <div class="flex items-baseline gap-2">
-                    <span class="text-2xs flex-shrink-0" style={{ width: "3.75rem", color: s.muted }}>导入时间</span>
-                    <span class="text-xs tabular-nums" style={{ color: s.text }}>{fmtTime(info().created_at)}</span>
-                  </div>
-                  <div class="flex items-baseline gap-2">
-                    <span class="text-2xs flex-shrink-0" style={{ width: "3.75rem", color: s.muted }}>更新时间</span>
-                    <span class="text-xs tabular-nums" style={{ color: s.text }}>{fmtTime(info().updated_at)}</span>
-                  </div>
-                </div>
-              </div>
-
-              <div><label class="text-2xs uppercase" style={{ color: s.muted }}>评分</label>
-                <div class="flex gap-0.5 mt-0.5">
-                  {[1, 2, 3, 4, 5].map((star) => (
-                    <button class="text-lg transition-colors"
-                      style={{ color: (info().rating || 0) >= star ? "var(--star-color)" : s.muted }}
-                      onClick={() => handleRating(star)}>★</button>
-                  ))}
-                </div>
-              </div>
-
-              <div>
-                <label class="text-2xs uppercase" style={{ color: s.muted }}>标签</label>
-                <div class="flex flex-wrap gap-1 mt-1">
-                  <Show when={info().tags.length > 0} fallback={<span class="text-xs" style={{ color: s.muted }}>暂无标签</span>}>
-                    {info().tags.map((tag) => (
-                      <span class="tag-pill text-white" style={{ background: tag.color || "#6c757d" }}>
-                        {tag.name}
-                        <button class="ml-1 text-white/60 hover:text-white"
-                          title="移除标签"
-                          onClick={() => handleRemoveTag(tag.id)}>×</button>
-                      </span>
-                    ))}
-                  </Show>
-                  <button class="tag-pill" style={{ background: s.tertiary, color: s.muted }}
-                    onClick={() => setShowTagPicker(!showTagPicker())}>
-                    {showTagPicker() ? "收起" : "+ 添加标签"}
-                  </button>
-                </div>
-
-                <Show when={showTagPicker()}>
-                  <div class="mt-1.5 rounded-lg overflow-hidden" style={{ border: `1px solid ${s.border}`, background: s.tertiary }}>
-                    <div class="max-h-40 overflow-y-auto py-1">
-                      <Show when={tags.tags().length > 0} fallback={
-                        <p class="px-2 py-1 text-xs" style={{ color: s.muted }}>还没有标签，先在下方新建</p>
-                      }>
-                        <For each={tags.tags()}>
-                          {(tag) => {
-                            const applied = () => info().tags.some((t) => t.id === tag.id);
-                            return (
-                              <div class="flex items-center gap-2 px-2 py-1 cursor-pointer text-xs transition-opacity hover:opacity-80"
-                                style={{ color: applied() ? s.accent : s.text }}
-                                onClick={() => applied() ? handleRemoveTag(tag.id) : handleAddTag(tag.id)}>
-                                <span class="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: tag.color || s.muted }} />
-                                <span class="truncate flex-1">{tag.name}</span>
-                                <Show when={applied()}>
-                                  <span style={{ color: s.accent }}>✓</span>
-                                </Show>
-                              </div>
-                            );
-                          }}
-                        </For>
+                      <Show when={showTagPicker()}>
+                        <div class="mt-1.5 rounded-md overflow-hidden" style={{ border: `1px solid ${s.border}`, background: s.tertiary }}>
+                          <div class="max-h-40 overflow-y-auto py-1">
+                            <Show when={tags.tags().length > 0} fallback={
+                              <p class="px-2 py-1 text-2xs" style={{ color: s.muted }}>还没有标签，先在下方新建</p>
+                            }>
+                              <For each={tags.tags()}>
+                                {(tag) => {
+                                  const applied = () => info().tags.some((t) => t.id === tag.id);
+                                  return (
+                                    <div class="flex items-center gap-2 px-2 py-1 cursor-pointer text-xs transition-opacity hover:opacity-80"
+                                      style={{ color: applied() ? s.accent : s.text }}
+                                      onClick={() => applied() ? handleRemoveTag(tag.id) : handleAddTag(tag.id)}>
+                                      <span class="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: tag.color || s.muted }} />
+                                      <span class="truncate flex-1">{tag.name}</span>
+                                      <Show when={applied()}>
+                                        <span style={{ color: s.accent }}>✓</span>
+                                      </Show>
+                                    </div>
+                                  );
+                                }}
+                              </For>
+                            </Show>
+                          </div>
+                          <div class="flex gap-1 p-1.5" style={{ borderTop: `1px solid ${s.border}` }}>
+                            <input class="input flex-1 text-xs py-1" placeholder="新建标签..." value={newTagName()}
+                              onInput={(e) => setNewTagName(e.currentTarget.value)}
+                              onKeyDown={(e) => { if (e.key === "Enter") handleCreateAndAddTag(); }} />
+                            <button class="btn-primary text-xs px-2" onClick={handleCreateAndAddTag}>新建</button>
+                          </div>
+                        </div>
                       </Show>
-                    </div>
-                    <div class="flex gap-1 p-1.5" style={{ borderTop: `1px solid ${s.border}` }}>
-                      <input class="input flex-1 text-xs py-1" placeholder="新建标签..." value={newTagName()}
-                        onInput={(e) => setNewTagName(e.currentTarget.value)}
-                        onKeyDown={(e) => { if (e.key === "Enter") handleCreateAndAddTag(); }} />
-                      <button class="btn-primary text-xs px-2" onClick={handleCreateAndAddTag}>新建</button>
-                    </div>
-                  </div>
-                </Show>
-              </div>
+                    </Block>
 
-              <div><label class="text-2xs uppercase" style={{ color: s.muted }}>备注</label>
-                <Show when={editingNotes()} fallback={
-                  <div class="text-sm mt-1 min-h-[2rem] cursor-text p-1 rounded whitespace-pre-wrap break-words"
-                    style={{ color: info().notes ? s.text : s.muted }}
-                    onClick={() => { setNotes(info().notes || ""); setEditingNotes(true); }}>
-                    {info().notes || "点击添加备注..."}
-                  </div>
-                }>
-                  <textarea class="input text-sm mt-1 min-h-[4rem] resize-none" value={notes()}
-                    onInput={(e) => setNotes(e.currentTarget.value)}
-                    onKeyDown={(e) => { if (e.key === "Enter" && e.ctrlKey) handleSaveNotes(); if (e.key === "Escape") setEditingNotes(false); }} />
-                  <div class="flex gap-1 mt-1 items-center">
-                    <button class="btn-primary text-xs" disabled={busy()} onClick={handleSaveNotes}>保存</button>
-                    <button class="btn-ghost text-xs" onClick={() => setEditingNotes(false)}>取消</button>
-                    <span class="text-2xs ml-auto" style={{ color: s.muted }}>Ctrl+Enter 保存</span>
-                  </div>
-                </Show>
-              </div>
+                    <Block label="描述">
+                      <Show when={editingNotes()} fallback={
+                        <div class="text-xs min-h-[1.75rem] cursor-text p-1 rounded whitespace-pre-wrap break-words"
+                          style={{ background: s.tertiary, color: info().notes ? s.text : s.muted }}
+                          onClick={() => { setNotes(info().notes || ""); setEditingNotes(true); }}>
+                          {info().notes || "点击添加描述..."}
+                        </div>
+                      }>
+                        <textarea class="input text-xs min-h-[4rem] resize-none" value={notes()}
+                          onInput={(e) => setNotes(e.currentTarget.value)}
+                          onKeyDown={(e) => { if (e.key === "Enter" && e.ctrlKey) handleSaveNotes(); if (e.key === "Escape") setEditingNotes(false); }} />
+                        <div class="flex gap-1 mt-1 items-center">
+                          <button class="btn-primary text-2xs px-2 py-0.5" disabled={busy()} onClick={handleSaveNotes}>保存</button>
+                          <button class="btn-ghost text-2xs" onClick={() => setEditingNotes(false)}>取消</button>
+                          <span class="text-2xs ml-auto" style={{ color: s.muted }}>Ctrl+Enter</span>
+                        </div>
+                      </Show>
+                    </Block>
 
-              <div><label class="text-2xs uppercase" style={{ color: s.muted }}>路径</label>
-                <p class="text-2xs break-all mt-0.5 allow-select" style={{ color: s.muted }}>{info().path}</p></div>
-            </div>
+                    <Block label="评分">
+                      <div class="flex gap-0.5">
+                        {[1, 2, 3, 4, 5].map((star) => (
+                          <button class="text-base leading-none transition-colors"
+                            style={{ color: (info().rating || 0) >= star ? "var(--star-color)" : s.muted }}
+                            onClick={() => handleRating(star)}>★</button>
+                        ))}
+                      </div>
+                    </Block>
+
+                    <Row label="所在文件夹" title={parentDir(info().path)}>
+                      <span class="allow-select">{parentDir(info().path)}</span>
+                    </Row>
+                  </Section>
+
+                  {/* 基本信息 */}
+                  <Section title="基本信息" open={openMeta()} onToggle={() => setOpenMeta(!openMeta())}>
+                    <Row label="尺寸">{info().width && info().height ? `${info().width} × ${info().height}` : "未知"}</Row>
+                    <Row label="类型">{info().extension.toUpperCase()}</Row>
+                    <Row label="大小">{formatSize(info().size_bytes)}</Row>
+                    <Row label="创建时间"><span class="tabular-nums">{fmtTime(info().ctime)}</span></Row>
+                    <Row label="修改时间"><span class="tabular-nums">{fmtTime(info().mtime)}</span></Row>
+                    <Row label="导入时间"><span class="tabular-nums">{fmtTime(info().created_at)}</span></Row>
+                    <Row label="更新时间"><span class="tabular-nums">{fmtTime(info().updated_at)}</span></Row>
+                    <Row label="完整路径" title={info().path}>
+                      <span class="text-2xs break-all allow-select" style={{ color: s.muted }}>{info().path}</span>
+                    </Row>
+                  </Section>
+                </>
+              )}
+            </Show>
           </div>
         )}
       </Show>
 
-      <div class="p-3 flex gap-2" style={{ borderTop: `1px solid ${s.border}` }}>
-        <button class="btn-secondary text-xs flex-1" onClick={() => api.openInExplorer(props.filePath)}>📂 在资源管理器中显示</button>
-        <button class="btn-secondary text-xs flex-1" onClick={() => api.openFile(props.filePath)}>🔗 打开方式...</button>
+      {/* 底部操作 */}
+      <div class="flex gap-1.5 p-2 flex-shrink-0" style={{ borderTop: `1px solid ${s.border}` }}>
+        <button class="btn-secondary text-2xs flex-1 py-1" onClick={() => props.filePath && api.openInExplorer(props.filePath)}>
+          📂 显示位置
+        </button>
+        <button class="btn-secondary text-2xs flex-1 py-1" onClick={() => props.filePath && api.openFile(props.filePath)}>
+          🔗 打开方式
+        </button>
       </div>
     </aside>
   );

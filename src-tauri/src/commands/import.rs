@@ -138,6 +138,8 @@ async fn import_library(
         file_count: imported_files as i64,
         thumbnail_cache_size: lib.thumbnail.cache_size(),
     };
+    // 导入完就排队生成缩略图，避免用户翻到哪张才现解哪张。
+    crate::commands::files::enqueue_missing_thumbnails(&state.thumbs, &lib, &library_id);
     drop(lib);
 
     Ok(ImportSummary {

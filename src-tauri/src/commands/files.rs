@@ -1,6 +1,8 @@
 use tauri::State;
 use crate::AppState;
+use crate::engine::thumbs::{Priority, ThumbJob, ThumbProgress, ThumbWorker, THUMB_SIZE};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct FileInfo {
@@ -211,39 +213,128 @@ pub async fn empty_trash(
     lib.db.purge_all_deleted().map_err(|e| e.to_string())
 }
 
+/// 缩略图查询结果。
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ThumbnailResult {
+    /// `ready` —— path 是缩略图；`fallback` —— 生成不出来，用原图；
+    /// `pending` —— 已排进后台队列，稍后通过 `thumb-ready` 事件推送。
+    pub status: String,
+    pub path: String,
+}
+
+/// 把某个图库里所有「还没有缩略图」的文件排进后台队列。
+///
+/// 只做一次数据库查询 + 每个文件一次 `exists()`，**不做任何解码**，所以可以
+/// 放心地在持有图库锁时调用。
+pub fn enqueue_missing_thumbnails(
+    thumbs: &Arc<ThumbWorker>,
+    lib: &crate::engine::Library,
+    library_id: &str,
+) -> usize {
+    let candidates = match lib.db.list_files_for_thumbs() {
+        Ok(c) => c,
+        Err(_) => return 0,
+    };
+
+    let mut jobs: Vec<ThumbJob> = Vec::new();
+    for (path, hash) in candidates {
+        let hash = hash
+            .filter(|h| !h.is_empty())
+            .unwrap_or_else(|| crate::utils::hash::blake3_hash_bytes(path.as_bytes()));
+        if lib.thumbnail.thumbnail_path(&hash, THUMB_SIZE).exists() {
+            continue;
+        }
+        jobs.push(ThumbJob {
+            key: format!("{library_id}|{path}"),
+            path: path.clone(),
+            source: std::path::PathBuf::from(&path),
+            hash,
+            engine: lib.thumbnail.clone(),
+        });
+    }
+
+    let n = jobs.len();
+    if n > 0 {
+        thumbs.enqueue(jobs);
+    }
+    n
+}
+
+/// 取一张图的缩略图路径。
+///
+/// 这里**只判断文件存不存在**，需要生成时把任务丢给后台线程后立刻返回
+/// `pending`。以前这个命令会同步整解码原图，而且全程握着图库锁 —— 滚动大图库
+/// 时每张卡片都在等一次全图解码，整个引擎串行排队，这就是卡顿的根源。
 #[tauri::command]
 pub async fn get_thumbnail_path(
     library_id: String,
     file_path: String,
     state: State<'_, AppState>,
-) -> Result<String, String> {
-    let engine = state.engine.lock().unwrap();
-    let lib = engine.get_library(&library_id).ok_or("未找到图库")?;
-    let mut lib = lib.lock().unwrap();
+) -> Result<ThumbnailResult, String> {
+    let key = format!("{library_id}|{file_path}");
 
-    let entry = lib.db.get_file_by_path(&file_path)
-        .map_err(|e| e.to_string())?
-        .ok_or("未找到文件")?;
-
-    // Use path-based hash for fast thumbnail identification
-    let hash = entry.blake3_hash.unwrap_or_else(|| {
-        crate::utils::hash::blake3_hash_bytes(file_path.as_bytes())
-    });
-
-    let thumb_path = lib.thumbnail.thumbnail_path(&hash, 512);
-
-    // Generate the thumbnail on the fly when it is missing. If generation
-    // fails — e.g. the decoder cannot handle the format (HEIC / RAW are common
-    // on macOS) — fall back to returning the ORIGINAL file path so the WebView
-    // can still render it with its own decoder instead of showing a blank card.
-    if !thumb_path.exists() {
-        let source = std::path::Path::new(&file_path);
-        if lib.thumbnail.generate(source, &hash).is_err() || !thumb_path.exists() {
-            return Ok(file_path);
-        }
+    // 已经出过结果的直接回答，连数据库都不用查。
+    if let Some(resolved) = state.thumbs.lookup(&key) {
+        return Ok(match resolved {
+            Some(thumb) => ThumbnailResult { status: "ready".into(), path: thumb },
+            None => ThumbnailResult { status: "fallback".into(), path: file_path },
+        });
     }
 
-    Ok(thumb_path.to_string_lossy().to_string())
+    let job = {
+        let engine = state.engine.lock().map_err(|_| "引擎锁失效".to_string())?;
+        let lib = engine.get_library(&library_id).ok_or("未找到图库")?;
+        let lib = lib.lock().map_err(|_| "图库锁失效".to_string())?;
+
+        let entry = lib
+            .db
+            .get_file_by_path(&file_path)
+            .map_err(|e| e.to_string())?
+            .ok_or("未找到文件")?;
+
+        // 索引阶段没有算过内容哈希，退化成「路径哈希」—— 与后台任务保持一致。
+        let hash = entry
+            .blake3_hash
+            .filter(|h| !h.is_empty())
+            .unwrap_or_else(|| crate::utils::hash::blake3_hash_bytes(file_path.as_bytes()));
+
+        let thumb_path = lib.thumbnail.thumbnail_path(&hash, THUMB_SIZE);
+        if thumb_path.exists() {
+            let thumb = thumb_path.to_string_lossy().to_string();
+            state.thumbs.remember(&key, thumb.clone());
+            return Ok(ThumbnailResult { status: "ready".into(), path: thumb });
+        }
+
+        ThumbJob {
+            key,
+            path: file_path.clone(),
+            source: std::path::PathBuf::from(&file_path),
+            hash,
+            engine: lib.thumbnail.clone(),
+        }
+    }; // 锁在这里释放，解码过程绝不持锁
+
+    // 屏幕上看得到的图插队，不必等整库补齐的批处理跑完。
+    state.thumbs.enqueue_with(vec![job], Priority::Urgent);
+    Ok(ThumbnailResult { status: "pending".into(), path: String::new() })
+}
+
+/// 当前缩略图后台任务的整体进度（用于状态栏/调试）。
+#[tauri::command]
+pub async fn get_thumbnail_progress(state: State<'_, AppState>) -> Result<ThumbProgress, String> {
+    Ok(state.thumbs.stats())
+}
+
+/// 手动触发一次「补齐缺失缩略图」。
+#[tauri::command]
+pub async fn build_missing_thumbnails(
+    library_id: String,
+    state: State<'_, AppState>,
+) -> Result<usize, String> {
+    let engine = state.engine.lock().map_err(|_| "引擎锁失效".to_string())?;
+    let lib = engine.get_library(&library_id).ok_or("未找到图库")?;
+    let lib = lib.lock().map_err(|_| "图库锁失效".to_string())?;
+    Ok(enqueue_missing_thumbnails(&state.thumbs, &lib, &library_id))
 }
 
 #[tauri::command]

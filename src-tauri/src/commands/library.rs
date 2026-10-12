@@ -210,9 +210,12 @@ pub async fn index_library(
 ) -> Result<IndexProgress, String> {
     let engine = state.engine.lock().unwrap();
     let lib = engine.get_library(&library_id).ok_or("未找到图库")?;
-    let mut lib = lib.lock().unwrap();
 
-    let files = lib.indexer.scan_directory(&lib.root_path);
+    // 扫描目录（只读文件元数据，不解码图片），不持有图库锁。
+    let files = {
+        let lib = lib.lock().unwrap();
+        lib.indexer.scan_directory(&lib.root_path)
+    };
     let total = files.len() as u64;
 
     let _ = app_handle.emit("index-progress", IndexProgress {
@@ -220,38 +223,64 @@ pub async fn index_library(
     });
 
     // Fast path: single transaction, metadata only, skip per-file DB check
-    let conn = lib.db.conn();
-    conn.execute("BEGIN TRANSACTION", []).map_err(|e| e.to_string())?;
+    {
+        let lib = lib.lock().unwrap();
+        let conn = lib.db.conn();
+        conn.execute("BEGIN TRANSACTION", []).map_err(|e| e.to_string())?;
 
-    let result = (|| -> Result<(), String> {
-        for (i, file_path) in files.iter().enumerate() {
-            if let Some(entry) = crate::engine::indexer::Indexer::build_entry(file_path) {
-                lib.db.insert_file(&entry).map_err(|e| e.to_string())?;
-            }
+        let result = (|| -> Result<(), String> {
+            for (i, file_path) in files.iter().enumerate() {
+                if let Some(entry) = crate::engine::indexer::Indexer::build_entry(file_path) {
+                    lib.db.insert_file(&entry).map_err(|e| e.to_string())?;
+                }
 
-            if i % 50 == 0 || i == files.len() - 1 {
-                let _ = app_handle.emit("index-progress", IndexProgress {
-                    total, processed: (i + 1) as u64,
-                    current_file: file_path.file_name().unwrap_or_default().to_string_lossy().to_string(),
-                    stage: "indexing".to_string(),
-                });
+                if i % 50 == 0 || i == files.len() - 1 {
+                    let _ = app_handle.emit("index-progress", IndexProgress {
+                        total, processed: (i + 1) as u64,
+                        current_file: file_path.file_name().unwrap_or_default().to_string_lossy().to_string(),
+                        stage: "indexing".to_string(),
+                    });
+                }
             }
+            Ok(())
+        })();
+
+        if result.is_ok() {
+            conn.execute("COMMIT", []).map_err(|e| e.to_string())?;
+        } else {
+            conn.execute("ROLLBACK", []).map_err(|e| e.to_string())?;
+            return Err(result.unwrap_err());
         }
-        Ok(())
-    })();
-
-    if result.is_ok() {
-        conn.execute("COMMIT", []).map_err(|e| e.to_string())?;
-    } else {
-        conn.execute("ROLLBACK", []).map_err(|e| e.to_string())?;
-        return Err(result.unwrap_err());
     }
 
+    // 真实文件数（供侧边栏 / libraries.json 使用）。索引写入的数据以前从不回
+    // 写配置，导致重启后图库计数恒为 0 —— 这里补上。
+    let file_count = {
+        let lib = lib.lock().unwrap();
+        lib.db.count_files(None, None).unwrap_or(total as i64)
+    };
+    save_libraries_config(&engine);
+
+    // 把还没生成缩略图的文件排进后台队列（只查库 + 判存在，毫秒级）。
+    let queued = {
+        let lib = lib.lock().unwrap();
+        crate::commands::files::enqueue_missing_thumbnails(&state.thumbs, &lib, &library_id)
+    };
+    drop(engine);
+
     let _ = app_handle.emit("index-progress", IndexProgress {
-        total, processed: total, current_file: String::new(), stage: "complete".to_string(),
+        total: file_count.max(0) as u64, processed: file_count.max(0) as u64,
+        current_file: String::new(), stage: "complete".to_string(),
     });
 
-    Ok(IndexProgress { total, processed: total, current_file: String::new(), stage: "complete".to_string() })
+    tracing::info!("索引完成：{file_count} 个文件，排队生成 {queued} 张缩略图");
+
+    Ok(IndexProgress {
+        total: file_count.max(0) as u64,
+        processed: file_count.max(0) as u64,
+        current_file: String::new(),
+        stage: "complete".to_string(),
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -357,49 +386,82 @@ pub async fn restore_libraries(
             continue;
         }
         if let Ok(id) = engine.open_library(&root_path) {
-            // Use cached file count — skip DB query and directory walk for speed
-            let cached_count = entry.file_count;
             let lib = engine.get_library(&id).unwrap();
-            let lib = lib.lock().unwrap();
-            
+
+            // 真实计数：`libraries.json` 里的缓存值只会在打开/关闭库时写入，
+            // 索引之后从来没人回写，所以它长期是 0 —— 重启后侧边栏就显示不出
+            // 图片数量。SQLite 的 COUNT 走索引，代价可以忽略。
+            let (count, cache_size, name, is_network, lib_root) = {
+                let lib = lib.lock().unwrap();
+                (
+                    lib.db.count_files(None, None).unwrap_or(0),
+                    lib.thumbnail.cache_size(),
+                    lib.name.clone(),
+                    lib.is_network,
+                    lib.root_path.to_string_lossy().to_string(),
+                )
+            };
+
             result.push(LibraryInfo {
-                id: lib.id.clone(),
-                name: lib.name.clone(),
-                root_path: lib.root_path.to_string_lossy().to_string(),
-                is_network: lib.is_network,
-                file_count: cached_count,
-                thumbnail_cache_size: 0, // skip expensive directory walk
+                id: id.clone(),
+                name,
+                root_path: lib_root,
+                is_network,
+                file_count: count,
+                thumbnail_cache_size: cache_size,
             });
-            
-            // If cached count is 0, queue a background re-index
-            if cached_count == 0 {
-                need_reindex.push(id.clone());
+
+            if count == 0 {
+                need_reindex.push(id);
+            } else {
+                // 数据库里已经有东西了 —— 顺手把缺的缩略图排进后台队列。
+                let lib = lib.lock().unwrap();
+                crate::commands::files::enqueue_missing_thumbnails(&state.thumbs, &lib, &id);
             }
         }
     }
 
+    // 回写真实计数，避免下次启动又把它当成空库。
+    save_libraries_config(&engine);
+
     // Spawn background re-index for empty libraries (non-blocking)
     if !need_reindex.is_empty() {
         let engine = state.engine.clone();
+        let thumbs = state.thumbs.clone();
         tauri::async_runtime::spawn(async move {
             for id in need_reindex {
-                if let Ok(mut engine) = engine.lock() {
-                    if let Some(lib) = engine.get_library(&id) {
-                        let mut lib = lib.lock().unwrap();
-                        let files = lib.indexer.scan_directory(&lib.root_path);
-                        let conn = lib.db.conn();
-                        conn.execute("BEGIN TRANSACTION", []).ok();
-                        for file_path in &files {
-                            if let Some(entry) = crate::engine::indexer::Indexer::build_entry(file_path) {
-                                lib.db.insert_file(&entry).ok();
-                            }
-                        }
-                        conn.execute("COMMIT", []).ok();
-                    }
-                }
+                reindex_in_background(&engine, &thumbs, &id);
             }
         });
     }
 
     Ok(RestoreResult { libraries: result, failed_paths: failed })
+}
+
+/// 后台重扫一个库并回写计数，随后排队生成缺失的缩略图。
+fn reindex_in_background(
+    engine: &std::sync::Arc<std::sync::Mutex<crate::engine::Engine>>,
+    thumbs: &std::sync::Arc<crate::engine::thumbs::ThumbWorker>,
+    library_id: &str,
+) {
+    let Ok(engine) = engine.lock() else { return };
+    let Some(lib) = engine.get_library(library_id) else { return };
+
+    {
+        let lib = lib.lock().unwrap();
+        let files = lib.indexer.scan_directory(&lib.root_path);
+        let conn = lib.db.conn();
+        conn.execute("BEGIN TRANSACTION", []).ok();
+        for file_path in &files {
+            if let Some(entry) = crate::engine::indexer::Indexer::build_entry(file_path) {
+                lib.db.insert_file(&entry).ok();
+            }
+        }
+        conn.execute("COMMIT", []).ok();
+    }
+
+    save_libraries_config(&engine);
+
+    let lib = lib.lock().unwrap();
+    crate::commands::files::enqueue_missing_thumbnails(thumbs, &lib, library_id);
 }

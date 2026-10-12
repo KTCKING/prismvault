@@ -321,7 +321,10 @@ export function Sidebar() {
                   }}>
                   <span class="text-xs">{lib.is_network ? "🌐" : "💻"}</span>
                   <span class="truncate">{lib.name}</span>
-                  <span class="ml-auto text-2xs" style={{ color: s.muted }}>{lib.file_count}</span>
+                  <span class="ml-auto text-2xs tabular-nums flex-shrink-0" style={{ color: s.muted }}
+                    title={`${lib.file_count} 个文件`}>
+                    {lib.file_count > 0 ? lib.file_count.toLocaleString() : ""}
+                  </span>
                   <button
                     class="ml-1 px-1 text-xs rounded hover:bg-red-500/20 transition-colors"
                     style={{ color: "var(--text-muted)" }}

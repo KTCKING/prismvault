@@ -19,18 +19,24 @@ export function ThumbnailCard(props: Props) {
   const [showRating, setShowRating] = createSignal(false);
   const [imgLoaded, setImgLoaded] = createSignal(false);
   const [imgError, setImgError] = createSignal(false);
-  // The image the <img> currently points at. Starts on the thumbnail (or the
-  // original file when no thumbnail is ready yet) and degrades to the original
-  // file if the thumbnail cannot be loaded (missing / undecodable format).
-  const [imgSrc, setImgSrc] = createSignal("");
 
   let rootRef!: HTMLDivElement;
 
   const originalSrc = () => convertFileSrc(props.file.path);
+  /**
+   * 要显示的图片地址。
+   *
+   * 缩略图还没就绪时返回 `null`（卡片显示骨架屏）——**刻意不回退原图**。
+   * 一张 4000×3000 的原片解码要占 50 MB 内存，整屏几十张一起解就是几百 MB
+   * 加肉眼可见的卡顿；后台缩略图任务几秒内就会推送结果，等一下远比解原图划算。
+   * 只有后端明确说「这张生成不出来」时才会把原图路径塞进 thumbnailUrl。
+   */
   const preferredSrc = () => {
     const url = props.thumbnailUrl;
-    return url && url !== "/placeholder.svg" ? convertFileSrc(url) : originalSrc();
+    return url ? convertFileSrc(url) : null;
   };
+
+  const [imgSrc, setImgSrc] = createSignal<string | null>(null);
 
   createEffect(() => {
     setImgSrc(preferredSrc());
@@ -60,14 +66,8 @@ export function ThumbnailCard(props: Props) {
   });
 
   const handleImgError = () => {
-    const orig = originalSrc();
-    if (imgSrc() !== orig) {
-      // Thumbnail failed to load -> fall back to the original file.
-      setImgSrc(orig);
-      setImgLoaded(false);
-    } else {
-      setImgError(true);
-    }
+    // 后端已经尽力了（缩略图或原图路径都拿不到可显示的内容）。
+    setImgError(true);
   };
 
   const handleClick = (e: MouseEvent) => {
@@ -93,12 +93,14 @@ export function ThumbnailCard(props: Props) {
       onMouseLeave={() => setShowRating(false)}>
 
       <div class="relative overflow-hidden" style={{ background: "var(--bg-tertiary)", height: `${props.size}px` }}>
-        <Show when={!imgError()}>
-          <img src={imgSrc()} alt={props.file.filename}
-            class="w-full h-full object-cover transition-opacity duration-200"
-            classList={{ "opacity-0": !imgLoaded(), "opacity-100": imgLoaded() }}
-            draggable={false}
-            onLoad={() => setImgLoaded(true)} onError={handleImgError} loading="lazy" />
+        <Show when={imgSrc()}>
+          {(src) => (
+            <img src={src()} alt={props.file.filename}
+              class="w-full h-full object-cover transition-opacity duration-200"
+              classList={{ "opacity-0": !imgLoaded(), "opacity-100": imgLoaded() }}
+              draggable={false} decoding="async"
+              onLoad={() => setImgLoaded(true)} onError={handleImgError} />
+          )}
         </Show>
         <Show when={!imgLoaded() && !imgError()}>
           <div class="absolute inset-0 skeleton" />

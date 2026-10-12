@@ -32,7 +32,9 @@ export default function App() {
   const [dragOver, setDragOver] = createSignal(false);
 
   /** Toggle the right-hand info / preview panel. When re-opening it prefers
-   *  the file that was shown last, then the first selected file. */
+   *  the file that was shown last, then the first selected file, then the first
+   *  file of the list; with nothing to show the panel still opens and reports
+   *  the library's file count (like Pixcall's right column). */
   const toggleInfoPanel = () => {
     if (ui.infoPanelOpen()) {
       ui.setInfoPanelOpen(false);
@@ -45,10 +47,8 @@ export default function App() {
       [...files.selectedFiles()][0] ??
       list[0]?.path ??
       null;
-    if (target) {
-      ui.setInfoPanelFile(target);
-      ui.setInfoPanelOpen(true);
-    }
+    ui.setInfoPanelFile(target);
+    ui.setInfoPanelOpen(true);
   };
 
   onMount(async () => {
@@ -220,9 +220,9 @@ export default function App() {
             <ThumbnailGrid />
           </div>
 
-          <Show when={ui.infoPanelOpen() && ui.infoPanelFile()}>
+          <Show when={ui.infoPanelOpen()}>
             <InfoPanel
-              filePath={ui.infoPanelFile()!}
+              filePath={ui.infoPanelFile()}
               onClose={() => {
                 ui.setInfoPanelOpen(false);
                 ui.setInfoPanelFile(null);
