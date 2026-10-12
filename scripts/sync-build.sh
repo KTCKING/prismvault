@@ -43,4 +43,12 @@ cp -r "$ROOT_DIR/src-tauri/icons" "$DEST/src-tauri/"
 cp -f "$ROOT_DIR/scripts/." "$DEST/scripts/" 2>/dev/null || true
 cp -f "$ROOT_DIR/package.json" "$DEST/" 2>/dev/null || true
 
+# 前端构建配置（漏掉这些会导致构建目录用旧配置，例如 Tailwind 新增动画不生效）
+cp -f "$ROOT_DIR/tailwind.config.ts" \
+      "$ROOT_DIR/postcss.config.ts" \
+      "$ROOT_DIR/vite.config.ts" \
+      "$ROOT_DIR/tsconfig.json" \
+      "$ROOT_DIR/index.html" \
+      "$DEST/" 2>/dev/null || true
+
 echo "✅ 同步完成"

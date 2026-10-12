@@ -60,7 +60,7 @@ pub async fn search_files(
             id: e.id, path: e.path, filename: e.filename, extension: e.extension,
             size_bytes: e.size_bytes, width: e.width, height: e.height,
             rating: e.rating, color_label: e.color_label, notes: e.notes,
-            mtime: e.mtime, tags,
+            mtime: e.mtime, ctime: e.ctime, created_at: e.created_at, updated_at: e.updated_at, tags,
         }
     }).collect();
 
@@ -89,7 +89,7 @@ pub async fn search_by_color(
                 id: e.id, path: e.path, filename: e.filename, extension: e.extension,
                 size_bytes: e.size_bytes, width: e.width, height: e.height,
                 rating: e.rating, color_label: e.color_label, notes: e.notes,
-                mtime: e.mtime, tags,
+                mtime: e.mtime, ctime: e.ctime, created_at: e.created_at, updated_at: e.updated_at, tags,
             }
         })
         .collect())
@@ -119,7 +119,8 @@ pub async fn find_duplicates(
             id: f.id, path: f.path, filename: f.filename, extension: f.extension,
             size_bytes: f.size_bytes, width: f.width, height: f.height,
             rating: f.rating, color_label: f.color_label, notes: f.notes,
-            mtime: f.mtime, tags: Vec::new(),
+            mtime: f.mtime, ctime: f.ctime, created_at: f.created_at,
+            updated_at: f.updated_at, tags: Vec::new(),
         }).collect(),
     }).collect())
 }

@@ -41,6 +41,24 @@ export function InfoPanel(props: Props) {
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   };
 
+  /** Timestamps come from SQLite as "YYYY-MM-DD HH:MM:SS" in UTC, whereas a
+   *  freshly indexed entry may still be an ISO string — normalise both. */
+  const parseTime = (value?: string | null): Date | null => {
+    if (!value) return null;
+    const iso = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value)
+      ? value.replace(" ", "T") + "Z"
+      : value;
+    const d = new Date(iso);
+    return Number.isNaN(d.getTime()) ? null : d;
+  };
+
+  const fmtTime = (value?: string | null): string => {
+    const d = parseTime(value);
+    if (!d) return "—";
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  };
+
   const handleSaveNotes = async () => {
     const libId = activeLibraryId();
     if (!libId) return;
@@ -106,7 +124,7 @@ export function InfoPanel(props: Props) {
   };
 
   return (
-    <aside class="info-panel w-72 flex-shrink-0 flex flex-col animate-slide-up">
+    <aside class="info-panel absolute inset-y-0 right-0 z-30 w-80 flex flex-col overflow-hidden animate-slide-in-right shadow-2xl">
       <div class="flex items-center justify-between px-4 py-3" style={{ borderBottom: `1px solid ${s.border}` }}>
         <span class="text-sm font-medium" style={{ color: s.text }}>信息</span>
         <button class="btn-ghost text-xs px-1.5" onClick={props.onClose}>✕</button>
@@ -132,8 +150,28 @@ export function InfoPanel(props: Props) {
                   <p class="text-sm" style={{ color: s.text }}>{formatSize(info().size_bytes)}</p></div>
                 <div><label class="text-2xs uppercase" style={{ color: s.muted }}>格式</label>
                   <p class="text-sm uppercase" style={{ color: s.text }}>{info().extension}</p></div>
-                <div><label class="text-2xs uppercase" style={{ color: s.muted }}>修改时间</label>
-                  <p class="text-sm" style={{ color: s.text }}>{new Date(info().mtime).toLocaleDateString()}</p></div>
+              </div>
+
+              <div>
+                <label class="text-2xs uppercase" style={{ color: s.muted }}>时间信息</label>
+                <div class="mt-1 space-y-1">
+                  <div class="flex items-baseline gap-2">
+                    <span class="text-2xs flex-shrink-0" style={{ width: "3.75rem", color: s.muted }}>创建时间</span>
+                    <span class="text-xs tabular-nums" style={{ color: s.text }}>{fmtTime(info().ctime)}</span>
+                  </div>
+                  <div class="flex items-baseline gap-2">
+                    <span class="text-2xs flex-shrink-0" style={{ width: "3.75rem", color: s.muted }}>修改时间</span>
+                    <span class="text-xs tabular-nums" style={{ color: s.text }}>{fmtTime(info().mtime)}</span>
+                  </div>
+                  <div class="flex items-baseline gap-2">
+                    <span class="text-2xs flex-shrink-0" style={{ width: "3.75rem", color: s.muted }}>导入时间</span>
+                    <span class="text-xs tabular-nums" style={{ color: s.text }}>{fmtTime(info().created_at)}</span>
+                  </div>
+                  <div class="flex items-baseline gap-2">
+                    <span class="text-2xs flex-shrink-0" style={{ width: "3.75rem", color: s.muted }}>更新时间</span>
+                    <span class="text-xs tabular-nums" style={{ color: s.text }}>{fmtTime(info().updated_at)}</span>
+                  </div>
+                </div>
               </div>
 
               <div><label class="text-2xs uppercase" style={{ color: s.muted }}>评分</label>

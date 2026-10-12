@@ -19,20 +19,27 @@ async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T
 
 // ── Mock Data ────────────────────────────────────
 
-const mockFiles: FileInfo[] = Array.from({ length: 50 }, (_, i) => ({
-  id: i + 1,
-  path: `C:\\Photos\\IMG_${String(i + 1).padStart(4, "0")}.jpg`,
-  filename: `IMG_${String(i + 1).padStart(4, "0")}.jpg`,
-  extension: "jpg",
-  size_bytes: Math.floor(Math.random() * 10_000_000) + 500_000,
-  width: Math.random() > 0.3 ? 4000 + Math.floor(Math.random() * 2000) : null,
-  height: Math.random() > 0.3 ? 3000 + Math.floor(Math.random() * 1500) : null,
-  rating: Math.random() > 0.6 ? Math.floor(Math.random() * 5) + 1 : null,
-  color_label: null,
-  notes: null,
-  mtime: new Date(Date.now() - Math.floor(Math.random() * 30 * 24 * 3600 * 1000)).toISOString(),
-  tags: [],
-}));
+const mockFiles: FileInfo[] = Array.from({ length: 50 }, (_, i) => {
+  const modified = Date.now() - Math.floor(Math.random() * 30 * 24 * 3600 * 1000);
+  const created = modified - Math.floor(Math.random() * 120 * 24 * 3600 * 1000);
+  return {
+    id: i + 1,
+    path: `C:\\Photos\\IMG_${String(i + 1).padStart(4, "0")}.jpg`,
+    filename: `IMG_${String(i + 1).padStart(4, "0")}.jpg`,
+    extension: "jpg",
+    size_bytes: Math.floor(Math.random() * 10_000_000) + 500_000,
+    width: Math.random() > 0.3 ? 4000 + Math.floor(Math.random() * 2000) : null,
+    height: Math.random() > 0.3 ? 3000 + Math.floor(Math.random() * 1500) : null,
+    rating: Math.random() > 0.6 ? Math.floor(Math.random() * 5) + 1 : null,
+    color_label: null,
+    notes: null,
+    mtime: new Date(modified).toISOString(),
+    ctime: new Date(created).toISOString(),
+    created_at: new Date(Math.max(created, modified) + 3600 * 1000).toISOString(),
+    updated_at: new Date(modified).toISOString(),
+    tags: [],
+  };
+});
 
 const mockTags: Tag[] = [
   { id: 1, name: "风景", parent_id: null, color: "#4c6ef5", icon: null },
@@ -203,7 +210,14 @@ export interface FileInfo {
   rating: number | null;
   color_label: string | null;
   notes: string | null;
+  /** 文件系统修改时间 */
   mtime: string;
+  /** 文件系统创建时间 */
+  ctime: string;
+  /** 导入图库的时间 */
+  created_at: string;
+  /** 图库记录最后更新时间 */
+  updated_at: string;
   tags: Tag[];
 }
 

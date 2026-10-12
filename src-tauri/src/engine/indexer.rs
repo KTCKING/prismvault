@@ -125,6 +125,8 @@ impl Indexer {
         // Try to get image dimensions
         let (width, height) = Self::get_image_dimensions(path);
 
+        let now_ts = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+
         Some(FileEntry {
             id: 0, // Will be assigned by DB
             path: path.to_string_lossy().to_string(),
@@ -141,7 +143,10 @@ impl Indexer {
             color_label: None,
             notes: None,
             is_deleted: false,
-            created_at: chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+            // Only honoured on first insert; a re-index preserves the
+            // original import time (see `Database::insert_file`).
+            created_at: now_ts.clone(),
+            updated_at: now_ts,
         })
     }
 

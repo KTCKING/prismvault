@@ -31,6 +31,26 @@ export default function App() {
 
   const [dragOver, setDragOver] = createSignal(false);
 
+  /** Toggle the right-hand info / preview panel. When re-opening it prefers
+   *  the file that was shown last, then the first selected file. */
+  const toggleInfoPanel = () => {
+    if (ui.infoPanelOpen()) {
+      ui.setInfoPanelOpen(false);
+      return;
+    }
+    const current = ui.infoPanelFile();
+    const list = files.files();
+    const target =
+      (current && list.some((f) => f.path === current) ? current : null) ??
+      [...files.selectedFiles()][0] ??
+      list[0]?.path ??
+      null;
+    if (target) {
+      ui.setInfoPanelFile(target);
+      ui.setInfoPanelOpen(true);
+    }
+  };
+
   onMount(async () => {
     // Watchdog: force-clear loading after 3s even if restore hangs
     const watchdog = setTimeout(() => {
@@ -157,8 +177,18 @@ export default function App() {
         <button
           class="btn-ghost text-xs"
           onClick={() => ui.setSidebarOpen(!ui.sidebarOpen())}
+          title={ui.sidebarOpen() ? "隐藏侧边栏" : "显示侧边栏"}
         >
           {ui.sidebarOpen() ? "◀" : "▶"}
+        </button>
+
+        <button
+          class="btn-ghost text-xs px-2"
+          style={{ color: ui.infoPanelOpen() ? "var(--accent)" : "var(--text-muted)" }}
+          onClick={toggleInfoPanel}
+          title={ui.infoPanelOpen() ? "隐藏信息面板" : "显示信息面板"}
+        >
+          ▥
         </button>
 
         <button
@@ -170,8 +200,9 @@ export default function App() {
         </button>
       </header>
 
-      {/* Main Content */}
-      <div class="flex flex-1 overflow-hidden">
+      {/* Main Content (relative so the info panel can float on top of the
+          grid without shrinking it — the grid column count stays constant) */}
+      <div class="relative flex flex-1 overflow-hidden">
         <Show when={!library.isRestoring()} fallback={
           <div class="flex-1 flex items-center justify-center" style={{ background: "var(--bg-primary)" }}>
             <div class="text-center">

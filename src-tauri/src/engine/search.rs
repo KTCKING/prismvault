@@ -127,7 +127,7 @@ impl SearchQuery {
         let sql = format!(
             "SELECT f.id, f.path, f.filename, f.extension, f.size_bytes, f.width, f.height,
                     f.blake3_hash, f.phash, f.mtime, f.ctime, f.rating, f.color_label, f.notes,
-                    f.is_deleted, f.created_at
+                    f.is_deleted, f.created_at, f.updated_at
              FROM files f
              WHERE {}
              ORDER BY f.mtime DESC",

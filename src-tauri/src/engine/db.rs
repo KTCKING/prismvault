@@ -20,7 +20,10 @@ pub struct FileEntry {
     pub color_label: Option<String>,
     pub notes: Option<String>,
     pub is_deleted: bool,
+    /// When the file was first imported into the library (DB insert time).
     pub created_at: String,
+    /// When this DB record was last refreshed (re-index / metadata edit).
+    pub updated_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -92,7 +95,8 @@ impl Database {
                 color_label TEXT,
                 notes       TEXT,
                 is_deleted  INTEGER DEFAULT 0,
-                created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+                created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
             );
 
             CREATE INDEX IF NOT EXISTS idx_files_path ON files(path);
@@ -156,9 +160,29 @@ impl Database {
             );
         ")?;
 
-        // Insert schema version
+        // ── Migrations for libraries created by older releases ──────────
+        // `updated_at` was introduced in schema v2. Add it in place for
+        // existing libraries and back-fill from `created_at`.
+        let existing_cols: Vec<String> = {
+            let mut stmt = self.conn.prepare("PRAGMA table_info(files)")?;
+            let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+            rows.filter_map(|r| r.ok()).collect()
+        };
+        if !existing_cols.iter().any(|c| c == "updated_at") {
+            self.conn.execute(
+                "ALTER TABLE files ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''",
+                [],
+            )?;
+            self.conn.execute(
+                "UPDATE files SET updated_at = created_at WHERE updated_at = ''",
+                [],
+            )?;
+        }
+
+        // Insert / bump schema version
         self.conn.execute(
-            "INSERT OR IGNORE INTO library_meta (key, value) VALUES ('schema_version', '1')",
+            "INSERT INTO library_meta (key, value) VALUES ('schema_version', '2')
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             [],
         )?;
 
@@ -168,10 +192,26 @@ impl Database {
     // ── File CRUD ──────────────────────────────────────
 
     pub fn insert_file(&self, entry: &FileEntry) -> SqlResult<i64> {
+        // Upsert keyed on `path`. On a re-index we must NOT clobber user data
+        // (rating / notes / color_label) nor the original import time
+        // (`created_at`); only file-derived fields are refreshed and
+        // `updated_at` is bumped.
         self.conn.execute(
-            "INSERT OR REPLACE INTO files 
-             (path, filename, extension, size_bytes, width, height, blake3_hash, phash, mtime, ctime, rating, color_label, notes)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            "INSERT INTO files
+             (path, filename, extension, size_bytes, width, height, blake3_hash, phash,
+              mtime, ctime, rating, color_label, notes, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+             ON CONFLICT(path) DO UPDATE SET
+                filename    = excluded.filename,
+                extension   = excluded.extension,
+                size_bytes  = excluded.size_bytes,
+                width       = excluded.width,
+                height      = excluded.height,
+                blake3_hash = excluded.blake3_hash,
+                phash       = excluded.phash,
+                mtime       = excluded.mtime,
+                ctime       = excluded.ctime,
+                updated_at  = excluded.updated_at",
             params![
                 entry.path,
                 entry.filename,
@@ -186,13 +226,23 @@ impl Database {
                 entry.rating,
                 entry.color_label,
                 entry.notes,
+                entry.created_at,
+                entry.updated_at,
             ],
         )?;
-        let id = self.conn.last_insert_rowid();
-        // Update FTS index
+
+        let id: i64 = self.conn.query_row(
+            "SELECT id FROM files WHERE path = ?1",
+            params![entry.path],
+            |row| row.get(0),
+        )?;
+
+        // Keep the FTS mirror in sync from the canonical `files` row so notes
+        // edited elsewhere are never lost by a re-index.
         self.conn.execute(
-            "INSERT OR REPLACE INTO files_fts(rowid, filename, path, notes) VALUES (?1, ?2, ?3, ?4)",
-            params![id, entry.filename, entry.path, entry.notes],
+            "INSERT OR REPLACE INTO files_fts(rowid, filename, path, notes)
+             SELECT id, filename, path, COALESCE(notes, '') FROM files WHERE id = ?1",
+            params![id],
         )?;
         Ok(id)
     }
@@ -201,7 +251,7 @@ impl Database {
         let mut stmt = self.conn.prepare(
             "SELECT id, path, filename, extension, size_bytes, width, height, 
                     blake3_hash, phash, mtime, ctime, rating, color_label, notes, 
-                    is_deleted, created_at
+                    is_deleted, created_at, updated_at
              FROM files WHERE path = ?1 AND is_deleted = 0"
         )?;
         
@@ -223,6 +273,7 @@ impl Database {
                 notes: row.get(13)?,
                 is_deleted: row.get(14)?,
                 created_at: row.get(15)?,
+                updated_at: row.get(16)?,
             })
         })?;
 
@@ -253,7 +304,7 @@ impl Database {
         let mut sql = format!(
             "SELECT f.id, f.path, f.filename, f.extension, f.size_bytes, f.width, f.height,
                     f.blake3_hash, f.phash, f.mtime, f.ctime, f.rating, f.color_label, f.notes,
-                    f.is_deleted, f.created_at
+                    f.is_deleted, f.created_at, f.updated_at
              FROM files f
              WHERE f.is_deleted = 0"
         );
@@ -294,6 +345,7 @@ impl Database {
                 notes: row.get(13)?,
                 is_deleted: row.get(14)?,
                 created_at: row.get(15)?,
+                updated_at: row.get(16)?,
             })
         })?;
 
@@ -319,7 +371,7 @@ impl Database {
 
     pub fn update_file_rating(&self, path: &str, rating: i32) -> SqlResult<()> {
         self.conn.execute(
-            "UPDATE files SET rating = ?1 WHERE path = ?2",
+            "UPDATE files SET rating = ?1, updated_at = datetime('now') WHERE path = ?2",
             params![rating, path],
         )?;
         Ok(())
@@ -327,7 +379,7 @@ impl Database {
 
     pub fn update_file_notes(&self, path: &str, notes: &str) -> SqlResult<()> {
         self.conn.execute(
-            "UPDATE files SET notes = ?1 WHERE path = ?2",
+            "UPDATE files SET notes = ?1, updated_at = datetime('now') WHERE path = ?2",
             params![notes, path],
         )?;
         // Also update FTS index
@@ -351,7 +403,7 @@ impl Database {
         let mut stmt = self.conn.prepare(
             "SELECT id, path, filename, extension, size_bytes, width, height,
                     blake3_hash, phash, mtime, ctime, rating, color_label, notes,
-                    is_deleted, created_at
+                    is_deleted, created_at, updated_at
              FROM files WHERE is_deleted = 1 ORDER BY mtime DESC"
         )?;
         let rows = stmt.query_map([], |row| {
@@ -372,6 +424,7 @@ impl Database {
                 notes: row.get(13)?,
                 is_deleted: row.get(14)?,
                 created_at: row.get(15)?,
+                updated_at: row.get(16)?,
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>()
@@ -417,7 +470,7 @@ impl Database {
         let mut stmt = self.conn.prepare(
             "SELECT id, path, filename, extension, size_bytes, width, height,
                     blake3_hash, phash, mtime, ctime, rating, color_label, notes,
-                    is_deleted, created_at
+                    is_deleted, created_at, updated_at
              FROM files WHERE blake3_hash = ?1 AND is_deleted = 0"
         )?;
         let rows = stmt.query_map(params![hash], |row| {
@@ -438,6 +491,7 @@ impl Database {
                 notes: row.get(13)?,
                 is_deleted: row.get(14)?,
                 created_at: row.get(15)?,
+                updated_at: row.get(16)?,
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>()
@@ -566,7 +620,7 @@ impl Database {
         let mut stmt = self.conn.prepare(
             "SELECT f.id, f.path, f.filename, f.extension, f.size_bytes, f.width, f.height,
                     f.blake3_hash, f.phash, f.mtime, f.ctime, f.rating, f.color_label, f.notes,
-                    f.is_deleted, f.created_at
+                    f.is_deleted, f.created_at, f.updated_at
              FROM files_fts fts
              JOIN files f ON fts.rowid = f.id
              WHERE files_fts MATCH ?1 AND f.is_deleted = 0
@@ -591,6 +645,7 @@ impl Database {
                 notes: row.get(13)?,
                 is_deleted: row.get(14)?,
                 created_at: row.get(15)?,
+                updated_at: row.get(16)?,
             })
         })?;
         let results: Vec<FileEntry> = rows.collect::<Result<Vec<_>, _>>()?;
@@ -607,7 +662,7 @@ impl Database {
         let mut stmt = self.conn.prepare(
             "SELECT id, path, filename, extension, size_bytes, width, height,
                     blake3_hash, phash, mtime, ctime, rating, color_label, notes,
-                    is_deleted, created_at
+                    is_deleted, created_at, updated_at
              FROM files
              WHERE is_deleted = 0 AND (filename LIKE ?1 OR path LIKE ?1 OR notes LIKE ?1)
              ORDER BY mtime DESC
@@ -631,6 +686,7 @@ impl Database {
                 notes: row.get(13)?,
                 is_deleted: row.get(14)?,
                 created_at: row.get(15)?,
+                updated_at: row.get(16)?,
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>()

@@ -14,7 +14,14 @@ pub struct FileInfo {
     pub rating: Option<i32>,
     pub color_label: Option<String>,
     pub notes: Option<String>,
+    /// File system modification time.
     pub mtime: String,
+    /// File system creation time.
+    pub ctime: String,
+    /// When the file was imported into the library.
+    pub created_at: String,
+    /// When the library record was last refreshed.
+    pub updated_at: String,
     pub tags: Vec<crate::engine::db::Tag>,
 }
 
@@ -60,7 +67,7 @@ pub async fn get_files(
             id: e.id, path: e.path, filename: e.filename, extension: e.extension,
             size_bytes: e.size_bytes, width: e.width, height: e.height,
             rating: e.rating, color_label: e.color_label, notes: e.notes,
-            mtime: e.mtime, tags,
+            mtime: e.mtime, ctime: e.ctime, created_at: e.created_at, updated_at: e.updated_at, tags,
         }
     }).collect();
 
@@ -86,7 +93,8 @@ pub async fn get_file_info(
         id: entry.id, path: entry.path, filename: entry.filename, extension: entry.extension,
         size_bytes: entry.size_bytes, width: entry.width, height: entry.height,
         rating: entry.rating, color_label: entry.color_label, notes: entry.notes,
-        mtime: entry.mtime, tags,
+        mtime: entry.mtime, ctime: entry.ctime, created_at: entry.created_at,
+        updated_at: entry.updated_at, tags,
     })
 }
 
@@ -161,7 +169,7 @@ pub async fn get_deleted_files(
             id: e.id, path: e.path, filename: e.filename, extension: e.extension,
             size_bytes: e.size_bytes, width: e.width, height: e.height,
             rating: e.rating, color_label: e.color_label, notes: e.notes,
-            mtime: e.mtime, tags,
+            mtime: e.mtime, ctime: e.ctime, created_at: e.created_at, updated_at: e.updated_at, tags,
         }
     }).collect();
     Ok(files)
