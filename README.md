@@ -113,7 +113,7 @@ prismvault/
 │   └── Cargo.toml
 │
 ├── scripts/                  # 构建脚本
-│   ├── build-windows.sh      # Windows：exe + msi
+│   ├── build-windows.sh      # Windows：exe + msi，并自动覆盖安装到本机
 │   ├── build-macos.sh        # macOS：app + dmg
 │   ├── sync-build.sh         # 同步源码到英文路径构建目录
 │   ├── package-source.sh     # 导出干净源码包
@@ -175,6 +175,11 @@ pnpm tauri build
 # 产物：src-tauri/target/release/bundle/nsis/*.exe
 #       src-tauri/target/release/bundle/msi/*.msi
 ```
+
+> `build-windows.sh` 在打包完成后会**自动覆盖安装到本机**（`NO_INSTALL=1` 可跳过）。
+> 桌面 / 开始菜单快捷方式指向的是 NSIS 安装目录 `%LOCALAPPDATA%\PrismVault\prismvault.exe`，
+> 而不是 `target/release` 下的构建产物 —— 所以**只构建、不安装**的话，点图标启动的
+> 会是上一次安装进去的旧版本，看起来就像改动没生效。
 
 > 在中文路径下工作时，建议先用 `bash scripts/sync-build.sh` 把源码同步到英文路径目录再构建（GNU 链接器对非 ASCII 路径不友好）。
 

@@ -34,3 +34,49 @@ echo ""
 echo "✅ 构建完成。产物："
 ls -lh src-tauri/target/release/bundle/nsis/*.exe 2>/dev/null | awk '{print "   📦 " $NF "  (" $5 ")"}'
 ls -lh src-tauri/target/release/bundle/msi/*.msi 2>/dev/null | awk '{print "   📦 " $NF "  (" $5 ")"}'
+
+# ── 构建后自动安装到本机 ───────────────────────────────────────────────
+# 桌面 / 开始菜单快捷方式指向 NSIS 的 per-user 安装目录
+# （%LOCALAPPDATA%\PrismVault\prismvault.exe），而不是 target/release 下的
+# 构建产物。所以「只构建、不安装」的话，点图标启动的永远是上一次安装进去
+# 的旧版本 —— 看起来就像修复没生效。
+# 这里默认打包完就覆盖安装一次，保证本机跑的就是刚构建的代码。
+# 想只出包不安装：NO_INSTALL=1 bash scripts/build-windows.sh
+if [[ "${NO_INSTALL:-0}" == "1" ]]; then
+  echo ""
+  echo "==> 已跳过本机安装（NO_INSTALL=1）"
+else
+  INSTALLER="$(ls -t src-tauri/target/release/bundle/nsis/*.exe 2>/dev/null | head -1 || true)"
+  if [[ -z "$INSTALLER" ]]; then
+    echo "⚠ 未找到 NSIS 安装包，跳过安装。" >&2
+    exit 1
+  fi
+
+  echo ""
+  echo "==> 安装到本机（覆盖旧版本）…"
+  # 正在运行的实例会占用 exe，先结束掉；没跑则忽略错误。
+  taskkill //F //IM prismvault.exe >/dev/null 2>&1 || true
+  sleep 1
+  # 用相对文件名 + cmd start /wait（bash 直接执行 NSIS /S 会被 SIGTERM）。
+  (cd "$(dirname "$INSTALLER")" && cmd //c "start /wait $(basename "$INSTALLER") /S")
+  sleep 2
+
+  INSTALLED="${LOCALAPPDATA:-$USERPROFILE/AppData/Local}/PrismVault/prismvault.exe"
+  if [[ -f "$INSTALLED" ]]; then
+    built_exe="src-tauri/target/release/prismvault.exe"
+    if [[ -f "$built_exe" ]]; then
+      b_size=$(stat -c %s "$built_exe")
+      i_size=$(stat -c %s "$INSTALLED")
+      if [[ "$b_size" == "$i_size" ]]; then
+        echo "    安装目录: $INSTALLED ($i_size bytes) — 与构建产物一致 ✓"
+      else
+        echo "    ⚠ 大小不一致：构建产物 $b_size bytes / 已安装 $i_size bytes" >&2
+        exit 1
+      fi
+    fi
+    echo "✅ 本机已更新为最新版本，直接点桌面 / 开始菜单图标即为本次构建的代码。"
+  else
+    echo "⚠ 未找到安装后的 exe（$INSTALLED），请确认 NSIS 安装是否成功。" >&2
+    exit 1
+  fi
+fi

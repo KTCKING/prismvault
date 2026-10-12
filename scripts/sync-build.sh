@@ -40,7 +40,9 @@ rm -rf "$DEST/src-tauri/icons"
 cp -r "$ROOT_DIR/src-tauri/icons" "$DEST/src-tauri/"
 
 # 脚本、包配置、说明
-cp -f "$ROOT_DIR/scripts/." "$DEST/scripts/" 2>/dev/null || true
+# 注意：目录要带 -r —— 之前用 `cp -f`，cp 会以 "omitting directory" 失败，
+# 错误又被 `|| true` 吞掉，结果 scripts/ 从来没同步过去，构建目录一直用旧脚本。
+cp -rf "$ROOT_DIR/scripts/." "$DEST/scripts/" 2>/dev/null || true
 cp -f "$ROOT_DIR/package.json" "$DEST/" 2>/dev/null || true
 
 # 前端构建配置（漏掉这些会导致构建目录用旧配置，例如 Tailwind 新增动画不生效）
