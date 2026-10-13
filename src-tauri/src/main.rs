@@ -108,6 +108,7 @@ fn main() {
             commands::files::empty_trash,
             commands::files::get_thumbnail_path,
             commands::files::get_thumbnail_progress,
+            commands::files::get_preview_path,
             commands::files::read_thumb_data_url,
             commands::files::build_missing_thumbnails,
             commands::files::open_in_explorer,

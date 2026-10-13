@@ -1,6 +1,8 @@
 use tauri::State;
 use crate::AppState;
-use crate::engine::thumbs::{Priority, ThumbJob, ThumbProgress, ThumbWorker, THUMB_SIZE};
+use crate::engine::thumbs::{
+    job_key, preview_job_key, Priority, ThumbJob, ThumbKind, ThumbProgress, ThumbWorker, THUMB_SIZE,
+};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -231,6 +233,10 @@ pub fn enqueue_missing_thumbnails(
     lib: &crate::engine::Library,
     library_id: &str,
 ) -> usize {
+    // 尺寸 / 质量参数变了就先清掉上一版缓存（内部有版本哨兵，平时只读一个小
+    // 文件），否则磁盘上会同时躺着 `_512.jpg` 和 `_448.jpg` 两套缩略图。
+    lib.thumbnail.ensure_cache_version();
+
     let candidates = match lib.db.list_files_for_thumbs() {
         Ok(c) => c,
         Err(_) => return 0,
@@ -245,11 +251,12 @@ pub fn enqueue_missing_thumbnails(
             continue;
         }
         jobs.push(ThumbJob {
-            key: format!("{library_id}|{path}"),
+            key: job_key(library_id, &path),
             path: path.clone(),
             source: std::path::PathBuf::from(&path),
             hash,
             engine: lib.thumbnail.clone(),
+            kind: ThumbKind::Grid,
         });
     }
 
@@ -271,7 +278,7 @@ pub async fn get_thumbnail_path(
     file_path: String,
     state: State<'_, AppState>,
 ) -> Result<ThumbnailResult, String> {
-    let key = format!("{library_id}|{file_path}");
+    let key = job_key(&library_id, &file_path);
 
     // 已经出过结果的直接回答，连数据库都不用查。
     if let Some(resolved) = state.thumbs.lookup(&key) {
@@ -311,10 +318,69 @@ pub async fn get_thumbnail_path(
             source: std::path::PathBuf::from(&file_path),
             hash,
             engine: lib.thumbnail.clone(),
+            kind: ThumbKind::Grid,
         }
     }; // 锁在这里释放，解码过程绝不持锁
 
     // 屏幕上看得到的图插队，不必等整库补齐的批处理跑完。
+    state.thumbs.enqueue_with(vec![job], Priority::Urgent);
+    Ok(ThumbnailResult { status: "pending".into(), path: String::new() })
+}
+
+/// 取一张图的**右侧预览图**路径（1600px）。
+///
+/// 和 `get_thumbnail_path` 同一套路：命中就立刻返回，未命中就排进后台队列并回
+/// `pending`，结果通过 `preview-ready` 事件推回来。区别是预览图**不做整库
+/// 预热** —— 只在用户真的打开某张图时才生成，因为 1600px 的图单张约 250 KB，
+/// 一个 2400 张的库全量生成就是 600 MB，而绝大部分图一辈子不会被点开。
+#[tauri::command]
+pub async fn get_preview_path(
+    library_id: String,
+    file_path: String,
+    state: State<'_, AppState>,
+) -> Result<ThumbnailResult, String> {
+    let key = preview_job_key(&library_id, &file_path);
+
+    if let Some(resolved) = state.thumbs.lookup(&key) {
+        return Ok(match resolved {
+            Some(preview) => ThumbnailResult { status: "ready".into(), path: preview },
+            None => ThumbnailResult { status: "fallback".into(), path: file_path },
+        });
+    }
+
+    let job = {
+        let engine = state.engine.lock().map_err(|_| "引擎锁失效".to_string())?;
+        let lib = engine.get_library(&library_id).ok_or("未找到图库")?;
+        let lib = lib.lock().map_err(|_| "图库锁失效".to_string())?;
+
+        let entry = lib
+            .db
+            .get_file_by_path(&file_path)
+            .map_err(|e| e.to_string())?
+            .ok_or("未找到文件")?;
+
+        let hash = entry
+            .blake3_hash
+            .filter(|h| !h.is_empty())
+            .unwrap_or_else(|| crate::utils::hash::blake3_hash_bytes(file_path.as_bytes()));
+
+        let preview_path = lib.thumbnail.preview_path(&hash);
+        if preview_path.exists() {
+            let preview = preview_path.to_string_lossy().to_string();
+            state.thumbs.remember(&key, preview.clone());
+            return Ok(ThumbnailResult { status: "ready".into(), path: preview });
+        }
+
+        ThumbJob {
+            key,
+            path: file_path.clone(),
+            source: std::path::PathBuf::from(&file_path),
+            hash,
+            engine: lib.thumbnail.clone(),
+            kind: ThumbKind::Preview,
+        }
+    }; // 锁在这里释放，解码过程绝不持锁
+
     state.thumbs.enqueue_with(vec![job], Priority::Urgent);
     Ok(ThumbnailResult { status: "pending".into(), path: String::new() })
 }

@@ -1,10 +1,12 @@
-import { createSignal, Show, For, createResource, createEffect, on, onMount } from "solid-js";
+import { createSignal, Show, For, createResource, createEffect, on, onMount, onCleanup } from "solid-js";
 import type { JSX } from "solid-js";
 import { api } from "@/lib/tauri-api";
 import { activeLibraryId, useLibraryStore } from "@/stores/library";
 import { useTagsStore } from "@/stores/tags";
 import { useFilesStore } from "@/stores/files";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { thumbUrl, toDisplaySrc } from "@/lib/thumbs";
 
 interface Props {
   /** 当前展示的文件；为 null 时面板显示「未选择文件 + 图库文件数」。 */
@@ -76,8 +78,12 @@ export function InfoPanel(props: Props) {
 
   const [openInfo, setOpenInfo] = createSignal(true);
   const [openMeta, setOpenMeta] = createSignal(true);
-  /** 预览图加载失败时退回的 data URL（绕开 asset 协议；512px 缩略图够用）。 */
+  /** 预览图加载失败时退回的 data URL（绕开 asset 协议；448px 缩略图够用）。 */
   const [previewDataUrl, setPreviewDataUrl] = createSignal<string | null>(null);
+  /** 后端按需生成的 1600px 预览图路径；null = 还没就绪，先用更小的图顶着。 */
+  const [previewUrl, setPreviewUrl] = createSignal<string | null>(null);
+  /** 快速切换文件时，丢弃迟到的响应，避免预览栏串成上一张图。 */
+  let previewToken = 0;
 
   const [fileInfo, { refetch }] = createResource(
     () => ({ libId: activeLibraryId(), path: props.filePath }),
@@ -87,7 +93,24 @@ export function InfoPanel(props: Props) {
     }
   );
 
-  onMount(() => { tags.loadTags(); });
+  onMount(() => {
+    tags.loadTags();
+
+    // 后台把 1600px 预览图生成好后推回来 —— 正好是当前这张才采用。
+    let unlisten: (() => void) | undefined;
+    listen<{ path: string; thumb: string | null }[]>("preview-ready", (event) => {
+      const cur = props.filePath;
+      if (!cur) return;
+      const hit = event.payload?.find((it) => it.path === cur);
+      if (hit?.thumb) {
+        previewToken += 1; // 让仍在途的查询作废，事件结果优先
+        setPreviewUrl(hit.thumb);
+      }
+    })
+      .then((fn) => { unlisten = fn; })
+      .catch(() => { /* 忽略 */ });
+    onCleanup(() => unlisten?.());
+  });
 
   // Reset transient edit state whenever the panel switches to another file
   createEffect(on(() => props.filePath, () => {
@@ -99,7 +122,47 @@ export function InfoPanel(props: Props) {
   }));
 
   /**
-   * 预览图加载失败 → 记日志并退回 data URL（缩略图）。
+   * 取当前文件的 1600px 预览图。
+   *
+   * 后端只判断「文件在不在」，需要生成时丢进后台队列立刻回 `pending`，结果稍后
+   * 由 `preview-ready` 事件推回来。**不做整库预热** —— 1600px 单张约 250 KB，
+   * 2400 张全量生成就是 600 MB，而绝大多数图一辈子不会被点开。
+   */
+  createEffect(() => {
+    const libId = activeLibraryId();
+    const path = props.filePath;
+    const token = ++previewToken;
+    setPreviewUrl(null);
+    if (!libId || !path) return;
+
+    void (async () => {
+      try {
+        const res = await api.getPreviewPath(libId, path);
+        if (token !== previewToken) return; // 已经切到别的图了
+        if (res.status === "ready") setPreviewUrl(res.path);
+      } catch {
+        /* 失败就继续用缩略图 / 原图顶着 */
+      }
+    })();
+  });
+
+  /**
+   * 预览栏的图片地址，按「越清晰越靠前」的优先级挑：
+   *   生成的 1600px 预览图 → 网格缩略图（448px，秒出）→ 原图。
+   * 原图放在最后：一张 12MP 原片解码要 36–50 MB 内存，只是过渡画面不值当。
+   */
+  const previewSrc = (filePath: string): string => {
+    const dataUrl = previewDataUrl();
+    if (dataUrl) return dataUrl;
+    const full = previewUrl();
+    if (full) return toDisplaySrc(full);
+    const small = thumbUrl(filePath);
+    if (small) return toDisplaySrc(small);
+    return convertFileSrc(filePath);
+  };
+
+  /**
+   * 预览图加载失败 → 放弃 1600px 预览图并退回 data URL（网格缩略图）。
    * 有些 WebView2 环境里 asset 协议（`http://asset.localhost/…`）加载不出来，
    * 那时预览区就是一块空白；直接读字节回来至少还能看到画面。
    */
@@ -108,6 +171,7 @@ export function InfoPanel(props: Props) {
     const path = props.filePath;
     const libId = activeLibraryId();
     void api.diagLog("preview", `load-error src=${el.src.slice(0, 90)}`);
+    setPreviewUrl(null); // 这张的 1600px 预览加载不了，退回更小的图
     if (!path || !libId || previewDataUrl()) {
       el.style.visibility = "hidden";
       return;
@@ -249,7 +313,7 @@ export function InfoPanel(props: Props) {
             {/* 预览 */}
             <div class="flex items-center justify-center flex-shrink-0"
               style={{ background: s.tertiary, height: "13rem" }}>
-              <img src={previewDataUrl() ?? convertFileSrc(path())} alt=""
+              <img src={previewSrc(path())} alt=""
                 class="max-w-full max-h-full object-contain" draggable={false}
                 onError={handlePreviewError} />
             </div>

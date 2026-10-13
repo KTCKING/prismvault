@@ -21,8 +21,9 @@ use tauri::{AppHandle, Emitter};
 
 use crate::engine::thumbnail::ThumbnailEngine;
 
-/// 网格缩略图边长，必须与 `ThumbnailEngine::grid_size` 一致。
-pub const THUMB_SIZE: u32 = 512;
+/// 网格缩略图边长 —— 直接复用 `ThumbnailEngine` 里的常量，避免两处各写一份
+/// 然后在改尺寸时忘掉其中一处。
+pub use crate::engine::thumbnail::GRID_SIZE as THUMB_SIZE;
 
 /// 单个并行批次的任务数。批次太大内存峰值高，太小线程利用率不足。
 const BATCH: usize = 24;
@@ -46,6 +47,25 @@ pub struct ThumbReadyItem {
     pub thumb: Option<String>,
 }
 
+/// 任务类型：网格缩略图 / 右侧预览图。两者共用同一条流水线，只是输出尺寸不同。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThumbKind {
+    /// 网格卡片用的 448px 缩略图。
+    Grid,
+    /// 右侧信息栏用的 1600px 预览图（按需生成，不做整库预热）。
+    Preview,
+}
+
+/// 网格缩略图的任务键。
+pub fn job_key(library_id: &str, file_path: &str) -> String {
+    format!("{library_id}|{file_path}")
+}
+
+/// 预览图的任务键 —— 与网格缩略图共用同一张任务表，靠 `#preview` 后缀区分。
+pub fn preview_job_key(library_id: &str, file_path: &str) -> String {
+    format!("{library_id}|{file_path}#preview")
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ThumbProgress {
     pub total: u64,
@@ -55,13 +75,15 @@ pub struct ThumbProgress {
 
 #[derive(Clone)]
 pub struct ThumbJob {
-    /// 唯一键：`{library_id}|{file_path}`，用于去重与查询。
+    /// 唯一键：网格图 `{library_id}|{file_path}`，预览图再加 `#preview` 后缀。
     pub key: String,
     /// 前端使用的键（原始文件路径）。
     pub path: String,
     pub source: PathBuf,
     pub hash: String,
     pub engine: ThumbnailEngine,
+    /// 这一步要产出哪一档图。
+    pub kind: ThumbKind,
 }
 
 struct Inner {
@@ -265,17 +287,19 @@ impl ThumbWorker {
 
             // 2. 并行解码 —— 不持有任何锁，也不持有 engine 锁。
             //    单个文件解码失败（RAW / PSD / 损坏文件）只影响它自己。
-            let generated: Vec<(String, ThumbReadyItem)> = self.pool.install(|| {
+            let generated: Vec<(String, ThumbKind, ThumbReadyItem)> = self.pool.install(|| {
                 batch
                     .into_par_iter()
                     .map(|job| {
-                        let thumb = job
-                            .engine
-                            .generate(&job.source, &job.hash)
+                        let produced = match job.kind {
+                            ThumbKind::Grid => job.engine.generate(&job.source, &job.hash),
+                            ThumbKind::Preview => job.engine.generate_preview(&job.source, &job.hash),
+                        };
+                        let thumb = produced
                             .ok()
                             .filter(|p| p.exists())
                             .map(|p| p.to_string_lossy().to_string());
-                        (job.key, ThumbReadyItem { path: job.path, thumb })
+                        (job.key, job.kind, ThumbReadyItem { path: job.path, thumb })
                     })
                     .collect()
             });
@@ -284,15 +308,28 @@ impl ThumbWorker {
             let progress = {
                 let Ok(mut g) = self.inner.lock() else { return };
                 g.done += generated.len() as u64;
-                for (key, item) in &generated {
+                for (key, _, item) in &generated {
                     g.jobs.remove(key);
                     g.results.insert(key.clone(), item.thumb.clone());
                 }
                 ThumbProgress { total: g.total, done: g.done, running: true }
             };
 
-            let items: Vec<ThumbReadyItem> = generated.into_iter().map(|(_, item)| item).collect();
-            self.emit("thumb-ready", items);
+            // 4. 按类型分别推送：网格图走 `thumb-ready`，预览图走 `preview-ready`。
+            let mut grid: Vec<ThumbReadyItem> = Vec::new();
+            let mut preview: Vec<ThumbReadyItem> = Vec::new();
+            for (_, kind, item) in generated {
+                match kind {
+                    ThumbKind::Grid => grid.push(item),
+                    ThumbKind::Preview => preview.push(item),
+                }
+            }
+            if !grid.is_empty() {
+                self.emit("thumb-ready", grid);
+            }
+            if !preview.is_empty() {
+                self.emit("preview-ready", preview);
+            }
 
             if last_emit.elapsed().as_millis() >= PROGRESS_INTERVAL_MS {
                 last_emit = std::time::Instant::now();

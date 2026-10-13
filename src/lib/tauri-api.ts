@@ -110,7 +110,8 @@ async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Promi
     case "delete_file":
       return null as unknown as T;
 
-    case "get_thumbnail_path": {
+    case "get_thumbnail_path":
+    case "get_preview_path": {
       return { status: "ready", path: "/placeholder.svg" } as unknown as T;
     }
 
@@ -384,6 +385,10 @@ export const api = {
 
   getThumbnailPath: (libraryId: string, filePath: string) =>
     invoke<ThumbnailResult>("get_thumbnail_path", { libraryId, filePath }),
+
+  /** 右侧预览栏用的 1600px 预览图（按需生成，结果走 `preview-ready` 事件）。 */
+  getPreviewPath: (libraryId: string, filePath: string) =>
+    invoke<ThumbnailResult>("get_preview_path", { libraryId, filePath }),
 
   /** 兜底：直接取缩略图的 data URL（绕开 asset 协议，用于加载失败时）。 */
   readThumbDataUrl: (libraryId: string, filePath: string) =>
