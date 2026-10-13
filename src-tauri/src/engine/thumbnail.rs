@@ -115,8 +115,14 @@ impl ThumbnailEngine {
                 }
 
                 if let (Some(off), Some(len)) = (thumb_offset, thumb_len) {
-                    if len > 1024 && off + len <= data.len() {
-                        let thumb_data = &data[off..off+len];
+                    // JPEGInterchangeFormat / ...Length 里的偏移量是**相对 TIFF 头**
+                    // 的，不是相对文件开头。以前直接拿 `off` 去切 `data`（文件头
+                    // 缓冲区），切出来的是错位的垃圾字节，解码必然失败 ——
+                    // 于是每张 JPEG 都退化成一整次全图解码，EXIF 快路径形同虚设。
+                    let start = tiff_start + off;
+                    let end = start + len;
+                    if len > 1024 && end <= data.len() {
+                        let thumb_data = &data[start..end];
                         let jpeg_path = dest.with_extension("jpg");
 
                         // 解码失败必须返回 Err（而不是假装成功），否则调用方会

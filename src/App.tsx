@@ -52,6 +52,11 @@ export default function App() {
   };
 
   onMount(async () => {
+    // 界面已经渲染出来了：通知后端注销 GPU 崩溃哨兵。如果这一步没跑到
+    // （例如 WebView2 的 GPU 进程起不来导致整个窗口白屏），下次启动会自动
+    // 降级到软件渲染。
+    void api.uiReady();
+
     // Watchdog: force-clear loading after 3s even if restore hangs
     const watchdog = setTimeout(() => {
       library.setIsRestoring(false);
@@ -200,8 +205,9 @@ export default function App() {
         </button>
       </header>
 
-      {/* Main Content (relative so the info panel can float on top of the
-          grid without shrinking it — the grid column count stays constant) */}
+      {/* Main Content — the right-hand info panel is a normal flex sibling so
+          it *occupies* space: the grid area narrows and the auto-fill column
+          count drops from 6 to 5 (instead of overlaying the last column). */}
       <div class="relative flex flex-1 overflow-hidden">
         <Show when={!library.isRestoring()} fallback={
           <div class="flex-1 flex items-center justify-center" style={{ background: "var(--bg-primary)" }}>

@@ -76,6 +76,8 @@ export function InfoPanel(props: Props) {
 
   const [openInfo, setOpenInfo] = createSignal(true);
   const [openMeta, setOpenMeta] = createSignal(true);
+  /** 预览图加载失败时退回的 data URL（绕开 asset 协议；512px 缩略图够用）。 */
+  const [previewDataUrl, setPreviewDataUrl] = createSignal<string | null>(null);
 
   const [fileInfo, { refetch }] = createResource(
     () => ({ libId: activeLibraryId(), path: props.filePath }),
@@ -93,7 +95,31 @@ export function InfoPanel(props: Props) {
     setShowTagPicker(false);
     setNewTagName("");
     setNotes("");
+    setPreviewDataUrl(null);
   }));
+
+  /**
+   * 预览图加载失败 → 记日志并退回 data URL（缩略图）。
+   * 有些 WebView2 环境里 asset 协议（`http://asset.localhost/…`）加载不出来，
+   * 那时预览区就是一块空白；直接读字节回来至少还能看到画面。
+   */
+  const handlePreviewError = async (e: Event) => {
+    const el = e.currentTarget as HTMLImageElement;
+    const path = props.filePath;
+    const libId = activeLibraryId();
+    void api.diagLog("preview", `load-error src=${el.src.slice(0, 90)}`);
+    if (!path || !libId || previewDataUrl()) {
+      el.style.visibility = "hidden";
+      return;
+    }
+    const dataUrl = await api.readThumbDataUrl(libId, path);
+    if (dataUrl) {
+      void api.diagLog("preview", "data-url-ok");
+      setPreviewDataUrl(dataUrl);
+    } else {
+      el.style.visibility = "hidden";
+    }
+  };
 
   const formatSize = (bytes: number) => {
     if (bytes < 1024) return `${bytes} B`;
@@ -189,7 +215,9 @@ export function InfoPanel(props: Props) {
   const libFileCount = () => library.activeLibrary()?.file_count ?? files.totalFiles();
 
   return (
-    <aside class="info-panel absolute inset-y-0 right-0 z-30 w-[19rem] flex flex-col overflow-hidden animate-slide-in-right shadow-2xl">
+    /* 占位式布局：面板是 flex 兄弟节点、宽度固定，网格区域随之变窄，
+       列数由 auto-fill 自动从 6 列收成 5 列（不再浮层遮挡图片）。 */
+    <aside class="info-panel w-[19rem] flex-shrink-0 flex flex-col overflow-hidden animate-slide-in-right">
       {/* 头部 */}
       <div class="flex items-center h-9 pl-3 pr-1.5 flex-shrink-0" style={{ borderBottom: `1px solid ${s.border}` }}>
         <span class="text-xs font-semibold" style={{ color: s.text }}>文件信息</span>
@@ -221,9 +249,9 @@ export function InfoPanel(props: Props) {
             {/* 预览 */}
             <div class="flex items-center justify-center flex-shrink-0"
               style={{ background: s.tertiary, height: "13rem" }}>
-              <img src={convertFileSrc(path())} alt=""
+              <img src={previewDataUrl() ?? convertFileSrc(path())} alt=""
                 class="max-w-full max-h-full object-contain" draggable={false}
-                onError={(e) => { (e.currentTarget as HTMLImageElement).style.visibility = "hidden"; }} />
+                onError={handlePreviewError} />
             </div>
 
             <Show when={fileInfo()} fallback={

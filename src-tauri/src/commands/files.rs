@@ -325,6 +325,49 @@ pub async fn get_thumbnail_progress(state: State<'_, AppState>) -> Result<ThumbP
     Ok(state.thumbs.stats())
 }
 
+/// 兜底通道：把缩略图文件直接读成 data URL 返回给前端。
+///
+/// 正常路径走 asset 协议（`convertFileSrc` → `http://asset.localhost/…`），
+/// 但在某些 WebView2 环境里这条路径会静默失败，卡片就只剩一片空白。这个命令
+/// 完全绕开协议层（512px 缩略图约 25KB，base64 后 33KB，代价可接受），只在
+/// asset 加载失败时由前端调用。
+#[tauri::command]
+pub async fn read_thumb_data_url(
+    library_id: String,
+    file_path: String,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    use base64::Engine as _;
+
+    let thumb_path = {
+        let engine = state.engine.lock().map_err(|_| "引擎锁失效".to_string())?;
+        let lib = engine.get_library(&library_id).ok_or("未找到图库")?;
+        let lib = lib.lock().map_err(|_| "图库锁失效".to_string())?;
+
+        let entry = lib
+            .db
+            .get_file_by_path(&file_path)
+            .map_err(|e| e.to_string())?
+            .ok_or("未找到文件")?;
+
+        let hash = entry
+            .blake3_hash
+            .filter(|h| !h.is_empty())
+            .unwrap_or_else(|| crate::utils::hash::blake3_hash_bytes(file_path.as_bytes()));
+
+        lib.thumbnail.thumbnail_path(&hash, THUMB_SIZE)
+    }; // 读文件前先放锁
+
+    let bytes = match std::fs::read(&thumb_path) {
+        Ok(b) if !b.is_empty() => b,
+        _ => return Ok(None),
+    };
+    Ok(Some(format!(
+        "data:image/jpeg;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(&bytes)
+    )))
+}
+
 /// 手动触发一次「补齐缺失缩略图」。
 #[tauri::command]
 pub async fn build_missing_thumbnails(

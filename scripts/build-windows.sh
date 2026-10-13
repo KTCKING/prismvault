@@ -42,6 +42,8 @@ ls -lh src-tauri/target/release/bundle/msi/*.msi 2>/dev/null | awk '{print "   �
 # 的旧版本 —— 看起来就像修复没生效。
 # 这里默认打包完就覆盖安装一次，保证本机跑的就是刚构建的代码。
 # 想只出包不安装：NO_INSTALL=1 bash scripts/build-windows.sh
+#
+# 【约定】脚本只构建 + 安装，**不负责启动软件** —— 启动由用户手动完成。
 if [[ "${NO_INSTALL:-0}" == "1" ]]; then
   echo ""
   echo "==> 已跳过本机安装（NO_INSTALL=1）"

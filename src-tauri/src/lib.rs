@@ -1,6 +1,7 @@
 pub mod engine;
 pub mod commands;
 pub mod utils;
+pub mod gpu;
 
 use std::sync::Arc;
 use std::sync::Mutex;

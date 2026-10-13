@@ -121,6 +121,9 @@ async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Promi
     case "build_missing_thumbnails":
       return 0 as unknown as T;
 
+    case "ui_ready":
+      return undefined as unknown as T;
+
     case "get_all_tags": {
       return mockTags as unknown as T;
     }
@@ -381,6 +384,18 @@ export const api = {
 
   getThumbnailPath: (libraryId: string, filePath: string) =>
     invoke<ThumbnailResult>("get_thumbnail_path", { libraryId, filePath }),
+
+  /** 兜底：直接取缩略图的 data URL（绕开 asset 协议，用于加载失败时）。 */
+  readThumbDataUrl: (libraryId: string, filePath: string) =>
+    invoke<string | null>("read_thumb_data_url", { libraryId, filePath }),
+
+  /** 把前端诊断信息写进后端日志（render-debug.log）。 */
+  diagLog: (tag: string, msg: string) =>
+    invoke<void>("diag_log", { tag, msg }).catch(() => {}),
+
+  /** 通知后端「界面已经渲染出来」——用于注销 GPU 崩溃哨兵。 */
+  uiReady: (diag?: string) =>
+    invoke<void>("ui_ready", { diag }),
 
   getThumbnailProgress: () =>
     invoke<ThumbProgress>("get_thumbnail_progress"),

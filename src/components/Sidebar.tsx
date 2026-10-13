@@ -28,7 +28,7 @@ export function Sidebar() {
   let dragStartY = 0;
   let dragThreshold = 5;
   let isDragging = false;
-  let sidebarRef!: HTMLElement;
+  let sidebarRef!: HTMLDivElement;
 
   const handleMouseDown = (e: MouseEvent, idx: number) => {
     // Only start drag on left button
@@ -153,7 +153,7 @@ export function Sidebar() {
           class="sidebar-item"
           classList={{ active: ui.showTrash() }}
           data-trash-drop
-          style={trashActive() ? { background: "var(--accent)", color: "#fff", outline: "2px dashed var(--accent)", outlineOffset: "2px" } : {}}
+          style={trashActive() ? { background: "var(--accent)", color: "#fff", outline: "2px dashed var(--accent)", outlineOffset: "2px" } : undefined}
           onClick={openTrash}
           onContextMenu={(e) => {
             e.preventDefault();
@@ -243,7 +243,7 @@ export function Sidebar() {
                   <button class="text-2xs" style={{ color: s.accent }}
                     onClick={async () => {
                       files.setFilterTag(undefined);
-                      tags.setSelectedTagIds(new Set());
+                      tags.setSelectedTagIds(new Set<number>());
                       await files.loadFiles(0);
                     }}>清除筛选</button>
                 </Show>

@@ -1,6 +1,6 @@
 import { createSignal, createEffect, Show, onMount, onCleanup } from "solid-js";
 import type { FileInfo } from "@/lib/tauri-api";
-import { convertFileSrc } from "@tauri-apps/api/core";
+import { toDisplaySrc } from "@/lib/thumbs";
 
 interface Props {
   file: FileInfo;
@@ -12,6 +12,8 @@ interface Props {
   onOpen: () => void;
   onVisible: () => void;
   onDoubleClick: () => void;
+  /** 图片加载失败时的兜底（父组件会换 data URL）。返回 true 表示已换新地址。 */
+  onImgError?: (src: string) => Promise<boolean>;
   onContextMenu?: (e: MouseEvent, path: string) => void;
 }
 
@@ -19,10 +21,11 @@ export function ThumbnailCard(props: Props) {
   const [showRating, setShowRating] = createSignal(false);
   const [imgLoaded, setImgLoaded] = createSignal(false);
   const [imgError, setImgError] = createSignal(false);
+  /** 当前这张已经试过 data URL 兜底了，避免失败循环。 */
+  const [fallbackTried, setFallbackTried] = createSignal(false);
 
   let rootRef!: HTMLDivElement;
 
-  const originalSrc = () => convertFileSrc(props.file.path);
   /**
    * 要显示的图片地址。
    *
@@ -33,7 +36,7 @@ export function ThumbnailCard(props: Props) {
    */
   const preferredSrc = () => {
     const url = props.thumbnailUrl;
-    return url ? convertFileSrc(url) : null;
+    return url ? toDisplaySrc(url) : null;
   };
 
   const [imgSrc, setImgSrc] = createSignal<string | null>(null);
@@ -42,6 +45,7 @@ export function ThumbnailCard(props: Props) {
     setImgSrc(preferredSrc());
     setImgError(false);
     setImgLoaded(false);
+    setFallbackTried(false);
   });
 
   onMount(() => {
@@ -65,8 +69,21 @@ export function ThumbnailCard(props: Props) {
     onCleanup(() => io.disconnect());
   });
 
-  const handleImgError = () => {
-    // 后端已经尽力了（缩略图或原图路径都拿不到可显示的内容）。
+  /**
+   * 图片加载失败。
+   *
+   * 第一次失败先请父组件换一条通道（data URL）—— 有些 WebView2 环境里
+   * `http://asset.localhost/…` 会静默失败，那时卡片就只剩空白，只有把字节
+   * 直接读回来才显示得出来。兜底也失败才认为这张图真的显示不了。
+   */
+  const handleImgError = async (e: Event) => {
+    const el = e.currentTarget as HTMLImageElement;
+    const src = el.src;
+    if (!fallbackTried() && props.onImgError) {
+      setFallbackTried(true);
+      const fixed = await props.onImgError(src);
+      if (fixed) return; // 新的 thumbnailUrl 会触发 effect，换掉 imgSrc
+    }
     setImgError(true);
   };
 

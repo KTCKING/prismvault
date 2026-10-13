@@ -7,8 +7,8 @@ import { useTheme } from "@/stores/theme";
 import { ThumbnailCard } from "./ThumbnailCard";
 import { api } from "@/lib/tauri-api";
 import type { ThumbReadyItem, ThumbProgress } from "@/lib/tauri-api";
+import { thumbUrl, setThumbUrl, clearThumbUrls, toDisplaySrc } from "@/lib/thumbs";
 import { activeLibraryId } from "@/stores/library";
-import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { startDrag } from "@crabnebula/tauri-plugin-drag";
 
@@ -22,6 +22,9 @@ const EDGE_ZONE = 48;
 /** Max auto-scroll speed (px per frame). */
 const SCROLL_SPEED = 22;
 
+/** 日志里只留路径尾部，避免整条路径刷屏。 */
+const trail = (p: string, n = 42): string => (p.length > n ? `…${p.slice(-n)}` : p);
+
 export function ThumbnailGrid() {
   const files = useFilesStore();
   const ui = useUIStore();
@@ -30,11 +33,11 @@ export function ThumbnailGrid() {
   const theme = useTheme();
 
   let containerRef!: HTMLDivElement;
-  /** file path -> 真正要显示的图片地址（缩略图，或生成失败时的原图）。
-   *  没有键 = 缩略图还没就绪，卡片显示骨架屏（绝不去解原图）。 */
-  const [thumbnailUrls, setThumbnailUrls] = createSignal<Record<string, string>>({});
   /** 已经发过缩略图请求的文件，避免同一张图重复 invoke。 */
   const requestedThumbs = new Set<string>();
+  /** 诊断用：前若干个请求的结果会写进后端日志，方便定位「为什么不出图」。 */
+  let loggedRequests = 0;
+  const LOG_REQUESTS = 25;
 
   // ── Marquee (drag) selection state ─────────────
   const [marquee, setMarquee] = createSignal<MarqueeRect | null>(null);
@@ -126,8 +129,9 @@ export function ThumbnailGrid() {
     if (outsideWindow && !d.handedOff) {
       d.handedOff = true;
       const paths = d.paths;
-      const thumb = thumbnailUrls()[paths[0]];
-      const icon = thumb && thumb !== "/placeholder.svg" ? thumb : paths[0];
+      const thumb = thumbUrl(paths[0]);
+      // 拖拽图标必须是一个真实文件路径，data URL 交给原生拖拽只会失败。
+      const icon = thumb && !thumb.startsWith("data:") ? thumb : paths[0];
       endCardDrag();
       suppressClickUntil = Date.now() + 400;
       void startDrag({ item: paths, icon }).catch((err) => console.error("拖出文件失败:", err));
@@ -182,17 +186,51 @@ export function ThumbnailGrid() {
     requestedThumbs.add(filePath);
     try {
       const res = await api.getThumbnailPath(libId, filePath);
+      if (loggedRequests < LOG_REQUESTS) {
+        loggedRequests += 1;
+        void api.diagLog("thumb", `${res.status} ${trail(filePath)} -> ${trail(res.path || "-")}`);
+      }
       if (res.status === "ready") {
-        setThumbnailUrls((prev) => ({ ...prev, [filePath]: res.path }));
+        setThumbUrl(filePath, res.path);
       } else if (res.status === "fallback") {
         // 生成不出来（RAW / PSD 等），交给 WebView 直接解原图。
-        setThumbnailUrls((prev) => ({ ...prev, [filePath]: filePath }));
+        setThumbUrl(filePath, filePath);
       }
       // pending：什么都不做，等后台任务推送。
-    } catch {
+    } catch (err) {
       // 查询失败：允许下次可见时重试，但保持骨架屏而不是去解原图。
       requestedThumbs.delete(filePath);
+      void api.diagLog("thumb", `ERROR ${String(err)} ${trail(filePath)}`);
     }
+  };
+
+  /**
+   * 最后的兜底：asset 协议（`http://asset.localhost/…`）加载失败时，直接向后端
+   * 要一份 data URL。这样即使某台机器上 asset 协议不可用，缩略图也能显示出来，
+   * 不至于全是空白。
+   */
+  const fallbackToDataUrl = async (filePath: string): Promise<boolean> => {
+    const libId = activeLibraryId();
+    if (!libId) return false;
+    try {
+      const dataUrl = await api.readThumbDataUrl(libId, filePath);
+      if (dataUrl) {
+        setThumbUrl(filePath, dataUrl);
+        void api.diagLog("img", `data-url-ok ${trail(filePath)}`);
+        return true;
+      }
+      void api.diagLog("img", `data-url-miss ${trail(filePath)}`);
+      return false;
+    } catch (err) {
+      void api.diagLog("img", `data-url-error ${String(err)} ${trail(filePath)}`);
+      return false;
+    }
+  };
+
+  /** 图片加载失败 → 记日志 + 尝试 data URL 兜底。返回 true 表示已换新地址。 */
+  const handleImgError = async (filePath: string, src: string): Promise<boolean> => {
+    void api.diagLog("img", `load-error ${trail(filePath)} src=${src.slice(0, 90)}`);
+    return fallbackToDataUrl(filePath);
   };
 
   onMount(() => {
@@ -204,18 +242,9 @@ export function ThumbnailGrid() {
     listen<ThumbReadyItem[]>("thumb-ready", (event) => {
       const payload = event.payload;
       if (!payload?.length) return;
-      setThumbnailUrls((prev) => {
-        const next = { ...prev };
-        let changed = false;
-        for (const item of payload) {
-          const url = item.thumb ?? item.path;
-          if (next[item.path] !== url) {
-            next[item.path] = url;
-            changed = true;
-          }
-        }
-        return changed ? next : prev;
-      });
+      for (const item of payload) {
+        setThumbUrl(item.path, item.thumb ?? item.path);
+      }
     })
       .then((fn) => { unlisten = fn; })
       .catch((err) => console.error("订阅缩略图事件失败:", err));
@@ -225,8 +254,7 @@ export function ThumbnailGrid() {
     // 查询会立刻从内存返回 ready / fallback，不会再解一次码。
     listen<ThumbProgress>("thumb-progress", (event) => {
       if (event.payload?.running) return;
-      const have = thumbnailUrls();
-      const missing = files.files().filter((f) => !have[f.path]).map((f) => f.path);
+      const missing = files.files().filter((f) => !thumbUrl(f.path)).map((f) => f.path);
       if (missing.length === 0) return;
       for (const p of missing) requestedThumbs.delete(p);
       void (async () => {
@@ -246,7 +274,7 @@ export function ThumbnailGrid() {
   // 切换图库时清空缓存，让新库的图片重新走一遍请求。
   createEffect(on(activeLibraryId, () => {
     requestedThumbs.clear();
-    setThumbnailUrls({});
+    clearThumbUrls();
   }));
 
   const handleScroll = () => {
@@ -561,13 +589,14 @@ export function ThumbnailGrid() {
             }}>
               <For each={files.files()}>
                 {(file, index) => (
-                  <ThumbnailCard file={file} thumbnailUrl={thumbnailUrls()[file.path]}
+                  <ThumbnailCard file={file} thumbnailUrl={thumbUrl(file.path)}
                     isSelected={files.selectedFiles().has(file.path)} size={size()}
                     onSelect={(multi) => files.toggleSelect(file.path, multi)}
                     onRatingChange={(r) => files.updateRating(file.path, r)}
                     onOpen={() => { ui.setInfoPanelFile(file.path); ui.setInfoPanelOpen(true); }}
                     onDoubleClick={() => viewer.open(files.files(), index())}
                     onVisible={() => loadThumbnail(file.path)}
+                    onImgError={(src) => handleImgError(file.path, src)}
                     onContextMenu={openFileContextMenu} />
                 )}
               </For>
@@ -583,13 +612,14 @@ export function ThumbnailGrid() {
               <For each={files.files()}>
                 {(file, index) => (
                   <div style={{ "break-inside": "avoid", "margin-bottom": "8px" }}>
-                    <ThumbnailCard file={file} thumbnailUrl={thumbnailUrls()[file.path]}
+                    <ThumbnailCard file={file} thumbnailUrl={thumbUrl(file.path)}
                       isSelected={files.selectedFiles().has(file.path)} size={size()}
                       onSelect={(multi) => files.toggleSelect(file.path, multi)}
                       onRatingChange={(r) => files.updateRating(file.path, r)}
                       onOpen={() => { ui.setInfoPanelFile(file.path); ui.setInfoPanelOpen(true); }}
                       onDoubleClick={() => viewer.open(files.files(), index())}
                       onVisible={() => loadThumbnail(file.path)}
+                      onImgError={(src) => handleImgError(file.path, src)}
                       onContextMenu={openFileContextMenu} />
                   </div>
                 )}
@@ -611,13 +641,17 @@ export function ThumbnailGrid() {
                     onDblClick={() => viewer.open(files.files(), index())}
                   >
                     <div ref={() => loadThumbnail(file.path)} class="w-10 h-10 flex-shrink-0 rounded overflow-hidden" style={{ background: "var(--bg-tertiary)" }}>
-                      <Show when={thumbnailUrls()[file.path]} fallback={<div class="w-full h-full skeleton" />}>
+                      <Show when={thumbUrl(file.path)} fallback={<div class="w-full h-full skeleton" />}>
                         {(url) => (
                           <img
-                            src={convertFileSrc(url())}
+                            src={toDisplaySrc(url())}
                             alt={file.filename} class="w-full h-full object-cover" draggable={false}
                             decoding="async"
-                            onError={(e) => { (e.currentTarget as HTMLImageElement).style.visibility = "hidden"; }}
+                            onError={async (e) => {
+                              const el = e.currentTarget as HTMLImageElement;
+                              const fixed = await handleImgError(file.path, el.src);
+                              if (!fixed) el.style.visibility = "hidden";
+                            }}
                           />
                         )}
                       </Show>
@@ -654,7 +688,7 @@ export function ThumbnailGrid() {
             }}
           >
             <img
-              src={thumbnailUrls()[p().path] ? convertFileSrc(thumbnailUrls()[p().path]) : "/placeholder.svg"}
+              src={thumbUrl(p().path) ? toDisplaySrc(thumbUrl(p().path) as string) : "/placeholder.svg"}
               class="w-full h-20 object-cover" alt="" draggable={false} />
             <Show when={p().count > 1}>
               <div class="absolute bottom-0 right-0 px-1.5 py-0.5 text-2xs rounded-tl"

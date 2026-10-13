@@ -11,7 +11,7 @@
 //!   * 后台 worker 按批次并行消费队列，结果通过 `thumb-ready` /
 //!     `thumb-progress` 事件推给前端。
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -65,12 +65,14 @@ pub struct ThumbJob {
 }
 
 struct Inner {
-    /// 屏幕上正在看的图（前端滚动到可见时才请求）—— 优先处理。
-    urgent: VecDeque<ThumbJob>,
-    /// 整库补齐的批处理队列（打开/导入图库时一次性排队）。
-    bulk: VecDeque<ThumbJob>,
-    /// 已入队或已出结果的任务键。
-    seen: HashSet<String>,
+    /// 屏幕上正在看的图（前端滚动到可见时才请求）—— 优先处理。存 key。
+    urgent: VecDeque<String>,
+    /// 整库补齐的批处理队列（打开/导入图库时一次性排队）。存 key。
+    bulk: VecDeque<String>,
+    /// key -> 任务本体（排队中或正在解码）。既用于去重，也保证「被漏掉」的
+    /// 任务能重新捡回来接着做 —— 只记 key 而不留任务的话，一旦某批任务丢了
+    /// （worker 异常退出），这些图就会永远显示不出缩略图。
+    jobs: HashMap<String, ThumbJob>,
     /// key -> 缩略图路径；`None` 表示确定生成不出来，别再重试。
     results: HashMap<String, Option<String>>,
     total: u64,
@@ -111,7 +113,7 @@ impl ThumbWorker {
             inner: Mutex::new(Inner {
                 urgent: VecDeque::new(),
                 bulk: VecDeque::new(),
-                seen: HashSet::new(),
+                jobs: HashMap::new(),
                 results: HashMap::new(),
                 total: 0,
                 done: 0,
@@ -145,7 +147,7 @@ impl ThumbWorker {
     pub fn remember(&self, key: &str, thumb: String) {
         if let Ok(mut g) = self.inner.lock() {
             if !g.results.contains_key(key) {
-                g.seen.insert(key.to_string());
+                g.jobs.remove(key);
                 g.results.insert(key.to_string(), Some(thumb));
             }
         }
@@ -172,39 +174,54 @@ impl ThumbWorker {
 
         let start = {
             let Ok(mut g) = self.inner.lock() else { return };
-            let mut added = 0u64;
+
+            // 自我修复：队列空了但还有「排队中/解码中」的任务、worker 又没在跑，
+            // 说明上一批任务丢了（线程异常退出）。把它们重新排进去，
+            // 否则这些卡片会永远停在骨架屏上。
+            if !g.running && g.urgent.is_empty() && g.bulk.is_empty() && !g.jobs.is_empty() {
+                let orphaned: Vec<String> = g.jobs.keys().cloned().collect();
+                for key in orphaned {
+                    g.bulk.push_back(key);
+                }
+            }
+
             for job in jobs {
+                let key = job.key.clone();
+                // 已经有结论的（无论成功还是确定失败）都不再重复处理。
+                if g.results.contains_key(&key) {
+                    continue;
+                }
+                let queued = g.jobs.contains_key(&key);
                 if priority == Priority::Urgent {
                     // 还在批处理队列里的话直接提上来。
-                    if let Some(pos) = g.bulk.iter().position(|j| j.key == job.key) {
+                    if let Some(pos) = g.bulk.iter().position(|k| *k == key) {
                         g.bulk.remove(pos);
-                        g.urgent.push_back(job);
+                        g.urgent.push_back(key);
                         continue;
                     }
                 }
-                if g.seen.contains(&job.key) {
+                if queued {
                     continue;
                 }
-                g.seen.insert(job.key.clone());
+                g.jobs.insert(key.clone(), job);
+                g.total += 1;
                 match priority {
-                    Priority::Urgent => g.urgent.push_back(job),
-                    Priority::Bulk => g.bulk.push_back(job),
+                    Priority::Urgent => g.urgent.push_back(key),
+                    Priority::Bulk => g.bulk.push_back(key),
                 }
-                added += 1;
             }
-            if added > 0 {
-                g.total += added;
-            }
-            if g.running {
-                false
-            } else {
+
+            let has_work = !g.urgent.is_empty() || !g.bulk.is_empty();
+            if has_work && !g.running {
                 g.running = true;
                 true
+            } else {
+                false
             }
         };
 
         if !start {
-            // 已有 worker 在跑，它会自己接着消费新任务。
+            // 已有 worker 在跑（或没活干），它会自己接着消费新任务。
             return;
         }
         self.emit("thumb-progress", self.stats());
@@ -221,13 +238,16 @@ impl ThumbWorker {
 
         loop {
             // 1. 取一批任务（urgent 优先）；两个队列都空则收工。
-            let batch = {
+            let batch: Vec<ThumbJob> = {
                 let Ok(mut g) = self.inner.lock() else { return };
                 let mut batch: Vec<ThumbJob> = Vec::with_capacity(BATCH);
                 while batch.len() < BATCH {
-                    match g.urgent.pop_front().or_else(|| g.bulk.pop_front()) {
-                        Some(job) => batch.push(job),
+                    let key = match g.urgent.pop_front().or_else(|| g.bulk.pop_front()) {
+                        Some(key) => key,
                         None => break,
+                    };
+                    if let Some(job) = g.jobs.get(&key) {
+                        batch.push(job.clone());
                     }
                 }
                 if batch.is_empty() {
@@ -244,6 +264,7 @@ impl ThumbWorker {
             };
 
             // 2. 并行解码 —— 不持有任何锁，也不持有 engine 锁。
+            //    单个文件解码失败（RAW / PSD / 损坏文件）只影响它自己。
             let generated: Vec<(String, ThumbReadyItem)> = self.pool.install(|| {
                 batch
                     .into_par_iter()
@@ -259,11 +280,12 @@ impl ThumbWorker {
                     .collect()
             });
 
-            // 3. 登记结果；同一个键只会出现一次，绝不会重复入队。
+            // 3. 登记结果（同时把任务从 jobs 里摘掉 —— 之后允许重试）。
             let progress = {
                 let Ok(mut g) = self.inner.lock() else { return };
                 g.done += generated.len() as u64;
                 for (key, item) in &generated {
+                    g.jobs.remove(key);
                     g.results.insert(key.clone(), item.thumb.clone());
                 }
                 ThumbProgress { total: g.total, done: g.done, running: true }

@@ -42,7 +42,8 @@
 - 🖼️ **JPEG 缩略图** —— 内容/路径哈希去重，优先直接抽取 EXIF 内嵌缩略图
 - 🔄 **实时同步** —— 原生文件监听 + 网络驱动器轮询
 - 🗂️ **四维时间** —— 每张图片记录**创建 / 修改 / 导入 / 更新**四种时间
-- 📋 **Pixcall 风格信息栏** —— 右侧「文件信息 / 基本信息」可折叠分区，属性行左标签右值；面板悬浮于网格之上不挤压列数，可一键显示 / 隐藏，未选中文件时显示当前图库文件总数
+- 📋 **Pixcall 风格信息栏** —— 右侧「文件信息 / 基本信息」可折叠分区，属性行左标签右值；面板**占位**显示（开启后网格自动从 6 列收成 5 列，不遮挡图片），可一键显示 / 隐藏，未选中文件时显示当前图库文件总数
+- 🛡️ **GPU 崩溃自愈** —— WebView2 的 GPU 进程若在本机起不来，首次崩溃后自动降级到软件渲染并持久化，之后启动不再白屏
 - 🗑️ **安全回收** —— 删除进回收站，支持还原与一键清空
 - 👥 **团队就绪** —— 多用户 NAS，个人元数据
 
@@ -105,6 +106,7 @@ prismvault/
 │   │   ├── utils/
 │   │   │   ├── hash.rs       # BLAKE3 + 感知哈希
 │   │   │   └── path.rs       # 路径工具
+│   │   ├── gpu.rs            # GPU 崩溃哨兵 + 软件渲染降级（窗口在此创建）
 │   │   ├── lib.rs
 │   │   └── main.rs
 │   ├── tauri.conf.json               # 公共配置
@@ -226,6 +228,10 @@ pnpm build:dmg          # = tauri build --bundles dmg
 | `src-tauri/tauri.macos.conf.json` | macOS：打包 `app`+`dmg`、DMG 窗口布局、最低系统版本 |
 
 > 注意：平台配置合并时**数组是整体替换**（而非追加），需重复声明要保留的项。
+>
+> 主窗口**不在** `tauri.conf.json` 里声明（`"windows": []`），而是在
+> `main.rs` 的 `setup()` 中用 `WebviewWindowBuilder` 创建 —— 因为 WebView2 的
+> 启动参数只能在创建时传入，而是否禁用 GPU 取决于上一次运行是否崩溃。
 
 ### 把源码同步到 Mac
 
@@ -237,6 +243,43 @@ bash scripts/package-source.sh
 ```
 
 把压缩包拷到 Mac，解压后运行 `bash scripts/build-macos.sh` 即可。
+
+## 故障排查
+
+### 打开后白屏，并弹出「msedgewebview2 已停止工作 / Error launching CrashSender.exe」
+
+WebView2 的 **GPU 子进程起不来**时，Chromium 会执行
+`LOG_FATAL: GPU process isn't usable. Goodbye.` 直接中止浏览器进程 → 宿主窗口只剩白屏。
+常见诱因：安全软件拦截 GPU 子进程、显卡驱动异常、WebView2 运行时状态损坏。
+
+PrismVault 已内置自愈：**崩溃一次后自动改用软件渲染并持久化**，之后启动直接正常。
+状态记录在：
+
+| 平台 | 路径 |
+|------|------|
+| Windows | `%APPDATA%\PrismVault\gpu-state.json` |
+| macOS | `~/Library/Application Support/PrismVault/gpu-state.json` |
+
+环境变量可用于人工干预：
+
+```bash
+# 重新尝试硬件渲染（并重置状态）
+PRISMVAULT_FORCE_GPU=1 prismvault.exe
+# 强制软件渲染
+PRISMVAULT_FORCE_SOFTWARE_RENDER=1 prismvault.exe
+```
+
+根治办法是把系统 WebView2 运行时修好（Windows「应用和功能」里找到
+**Microsoft Edge WebView2 Runtime** → 修改 → 修复），修好后再用
+`PRISMVAULT_FORCE_GPU=1` 启动一次即可恢复硬件加速。
+
+### macOS 提示「已损坏，无法打开」
+
+Gatekeeper 隔离属性所致：
+
+```bash
+xattr -dr com.apple.quarantine /Applications/PrismVault.app
+```
 
 ## 性能设计：为什么大图库滚动不再卡
 
@@ -259,7 +302,24 @@ bash scripts/package-source.sh
 | 后台任务 | 独立线程 + `rayon` 并行批次解码，不持有任何锁；每批结果通过 `thumb-ready` 事件推给前端 |
 | 触发时机 | 导入完成、打开库、恢复库、索引结束都会自动排队补齐 |
 | 生成策略 | JPEG 优先直接抽取 EXIF 内嵌缩略图（只读文件头 1MB），失败才整解码 |
-| 兜底 | 队列跑空后前端会把仍未拿到结果、又不在 `pending` 的图片重新问一遍，避免漏事件导致的空白卡片 |
+| 队列自愈 | 任务表按 key 记录任务本体，队列空但仍有未完成任务时会重新排队，避免线程异常退出后卡片永久骨架屏 |
+| 前端渲染 | 缩略图地址按 **每张图一个独立信号** 存放 —— 一张就绪只刷新那一张卡片（列表视图上百行时差别极大） |
+| 兜底 1 | 队列跑空后前端把仍未拿到结果的图片重新问一遍，补上「事件订阅晚于请求」的竞态 |
+| 兜底 2 | `<img>` 加载失败（asset 协议不可用的环境）→ 记日志 + 改走 `read_thumb_data_url` 的 base64 data URL，保证出图 |
+
+## 排查：图片显示不出来
+
+图片看不见多半卡在 WebView2 内部（asset 协议、`<img>` 加载失败），JS 侧的错误
+外部看不到。所以前端会把关键线索写进后端日志：
+
+| 平台 | 日志文件 |
+|------|----------|
+| Windows | `%APPDATA%\PrismVault\render-debug.log` |
+| macOS | `~/Library/Application Support/PrismVault/render-debug.log` |
+
+日志里会包含：启动时的软件渲染开关、页面加载事件、前端 `ui_ready` 上报，
+以及缩略图链路的 `[fe:thumb]`（前 25 个请求结果）、`[fe:img]` / `[fe:preview]`
+（**所有**加载失败）。每次启动会清空重写。
 
 ## 性能目标
 
