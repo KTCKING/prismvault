@@ -46,7 +46,11 @@ fn main() {
                 .resizable(true)
                 .fullscreen(false)
                 .decorations(true)
-                .transparent(false)
+                // 注意：不要在这里调 `.transparent(false)`。Tauri 把
+                // `WebviewWindowBuilder::transparent` 门控在
+                // `#[cfg(any(not(target_os = "macos"), feature = "macos-private-api"))]`，
+                // 于是 Windows 上能编过、macOS 上直接 E0599 编译失败。
+                // 而且它默认就是 false，本来也不需要显式关一次。
                 .center()
                 .on_page_load(move |_window, payload| {
                     gpu::render_log(

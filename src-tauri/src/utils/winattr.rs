@@ -12,12 +12,18 @@
 use std::path::Path;
 
 /// `FILE_ATTRIBUTE_HIDDEN` —— 资源管理器默认不显示。
+///
+/// 三个常量都只给 Windows 实现用；加 `cfg` 是为了在 macOS / Linux 上不产生
+/// `never used` 告警（CI 的 macOS 任务会把告警刷满）。
+#[cfg(windows)]
 const FILE_ATTRIBUTE_HIDDEN: u32 = 0x0000_0002;
 /// `FILE_ATTRIBUTE_NOT_CONTENT_INDEXED` —— 不参与 Windows 搜索的内容索引。
 /// 库里装了上万张缩略图和几个 SQLite 文件，它们既不该被索引，也不该出现在
 /// 用户「在这台电脑上搜索图片」的结果里。
+#[cfg(windows)]
 const FILE_ATTRIBUTE_NOT_CONTENT_INDEXED: u32 = 0x0000_2000;
 /// `GetFileAttributesW` 的失败返回值。
+#[cfg(windows)]
 const INVALID_FILE_ATTRIBUTES: u32 = 0xFFFF_FFFF;
 
 #[cfg(windows)]
