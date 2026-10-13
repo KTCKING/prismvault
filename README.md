@@ -186,6 +186,18 @@ pnpm tauri build
 
 > 在中文路径下工作时，建议先用 `bash scripts/sync-build.sh` 把源码同步到英文路径目录再构建（GNU 链接器对非 ASCII 路径不友好）。
 
+> **平台门控 API 预检**：`build-windows.sh` 在构建前会跑
+> [`scripts/check-platform-api.sh`](scripts/check-platform-api.sh)，扫描 Tauri 中
+> 「Windows 有、macOS 没有」的 API 调用（目前是 `transparent`）。
+> 原因：本地只编译 Windows，一旦用了这类方法，本地一切正常，**要等 CI 的
+> dmg 任务编译失败才会发现**；而在 Windows 上又做不了 macOS 的交叉 `cargo check`
+> （依赖链里的 `objc2-exception-helper` 需要 macOS 的 C 工具链）。
+> 跳过预检：`SKIP_PLATFORM_CHECK=1`。
+>
+> 曾踩过的坑：`WebviewWindowBuilder::transparent` 的门控是
+> `#[cfg(any(not(target_os = "macos"), feature = "macos-private-api"))]`
+> —— Windows 上存在、macOS 上默认不存在，直接让两个 dmg 任务报 `E0599`。
+
 ### macOS（本地，app + dmg）
 
 在 Mac 上执行一键脚本（自动检查环境、装依赖、构建 dmg）：

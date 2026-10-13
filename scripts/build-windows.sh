@@ -27,6 +27,16 @@ if ! command -v windres >/dev/null 2>&1; then
 fi
 echo "    windres: $(command -v windres)"
 
+# ── 预检：平台门控 API ─────────────────────────────────────────────────
+# 本地只编 Windows，用了「Windows 有、macOS 没有」的 Tauri API 时本地不会报错，
+# 要等 CI 的 dmg 任务编译失败才发现（2026-10-13 踩过 transparent）。这里先挡一道。
+# 只想跳过：SKIP_PLATFORM_CHECK=1 bash scripts/build-windows.sh
+if [[ "${SKIP_PLATFORM_CHECK:-0}" == "1" ]]; then
+  echo "==> 已跳过平台门控 API 预检（SKIP_PLATFORM_CHECK=1）"
+elif [[ -f scripts/check-platform-api.sh ]]; then
+  bash scripts/check-platform-api.sh || exit 1
+fi
+
 echo "==> 开始 Windows 构建 …"
 npm run build:tauri
 
