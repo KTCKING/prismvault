@@ -103,6 +103,11 @@ impl Engine {
                 let lib_canonical = lib.root_path.canonicalize().unwrap_or_else(|_| lib.root_path.clone());
                 if lib_canonical == canonical {
                     self.active_library_id = Some(id.clone());
+                    // 老图库可能是在这个改动之前建的，`.prism` 还没打过隐藏
+                    // 属性；每次重新打开顺手补齐（幂等，一次 syscall 的事）。
+                    if !lib.is_network {
+                        crate::utils::winattr::hide_library_metadata(&lib.root_path);
+                    }
                     return Ok(id.clone());
                 }
             }
@@ -121,7 +126,13 @@ impl Engine {
             std::fs::create_dir_all(&local).map_err(|e| e.to_string())?;
             local
         } else {
-            root_path.join(".prism")
+            // 本地库的元数据放在库根下的 `.prism`。它靠点前缀在 macOS / Linux
+            // 上天然隐藏，Windows 却不认 —— 建完之后立刻显式打上隐藏属性，
+            // 免得它混在用户的照片堆里被看到、甚至被顺手删掉。
+            let prism = crate::utils::winattr::metadata_dir(root_path);
+            std::fs::create_dir_all(&prism).map_err(|e| e.to_string())?;
+            crate::utils::winattr::hide_library_metadata(root_path);
+            prism
         };
 
         let db_path = db_dir.join("db.sqlite");
