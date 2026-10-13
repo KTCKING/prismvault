@@ -2,7 +2,7 @@
 
 > 高性能桌面图片管理软件 —— 基于 **Tauri 2 + Rust + SolidJS** 构建。
 
-[![Build macOS DMG](https://github.com/KTCKING/prismvault/actions/workflows/build-dmg.yml/badge.svg)](https://github.com/KTCKING/prismvault/actions/workflows/build-dmg.yml)
+[![Build Installers](https://github.com/KTCKING/prismvault/actions/workflows/build-installers.yml/badge.svg)](https://github.com/KTCKING/prismvault/actions/workflows/build-installers.yml)
 [![Latest Release](https://img.shields.io/github/v/release/KTCKING/prismvault?color=blue)](https://github.com/KTCKING/prismvault/releases/latest)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](#许可证)
 
@@ -118,11 +118,13 @@ prismvault/
 ├── scripts/                  # 构建脚本
 │   ├── build-windows.sh      # Windows：exe + msi，并自动覆盖安装到本机
 │   ├── build-macos.sh        # macOS：app + dmg
+│   ├── make-dmg.sh           # macOS：dmg 打包（原生失败自动重试 + hdiutil 兜底）
+│   ├── check-platform-api.sh # 预检「Windows 有、macOS 没有」的 Tauri API
 │   ├── sync-build.sh         # 同步源码到英文路径构建目录
 │   ├── package-source.sh     # 导出干净源码包
 │   └── open-bundle.cjs       # 构建后打开产物目录
 │
-├── .github/workflows/build-dmg.yml   # CI：自动构建 macOS dmg
+├── .github/workflows/build-installers.yml  # CI：macOS dmg + Windows exe/msi
 ├── patches/indexmap-1.9.3/           # Windows GNU 工具链补丁
 ├── package.json
 ├── vite.config.ts
@@ -204,8 +206,8 @@ pnpm tauri build
 
 ```bash
 bash scripts/build-macos.sh
-# 产物：src-tauri/target/release/bundle/dmg/PrismVault_<version>_<arch>.dmg
-#       src-tauri/target/release/bundle/macos/PrismVault.app
+# 产物：src-tauri/target/<host-triple>/release/bundle/dmg/PrismVault_<version>_<arch>.dmg
+#       src-tauri/target/<host-triple>/release/bundle/macos/PrismVault.app
 ```
 
 也可以手动执行：
@@ -214,6 +216,19 @@ bash scripts/build-macos.sh
 pnpm install
 pnpm build:dmg          # = tauri build --bundles dmg
 ```
+
+> **DMG 打包会失败？** Tauri 的 dmg 打包内嵌了 `create-dmg`，它靠 AppleScript
+> 遥控 Finder 给图标排版。在**没有 GUI 会话**的环境（SSH 登录的 Mac、CI runner）里
+> 这步会报 `Finder got an error: AppleEvent timed out. (-1712)`，或卡在
+> `hdiutil detach`（`timeout for DiskArbitration expired`），而 tauri-cli 只会吐出
+> 一句被吞掉详情的 `failed to run bundle_dmg.sh`。
+> 用 [`scripts/make-dmg.sh`](scripts/make-dmg.sh) 代替：先试原生打包（失败自动清场重试
+> 一次），仍失败就用 `hdiutil` 直接把 `.app` 封成 dmg —— 不依赖 AppleScript，必定出包
+> （代价是图标按 Finder 默认排布）。`build-macos.sh` 已经默认走这条路径。
+>
+> ```bash
+> bash scripts/make-dmg.sh "$(rustc -vV | awk '/^host:/{print $2}')"
+> ```
 
 > 正式对外分发建议做 **代码签名 + 公证（notarization）**，需要 Apple 开发者账号，
 > 在 `src-tauri/tauri.macos.conf.json` 中配置 `bundle.macOS.signingIdentity` 等参数。
@@ -237,6 +252,10 @@ pnpm build:dmg          # = tauri build --bundles dmg
 
 - 为什么必须分三个 runner：**桌面安装包无法跨平台交叉编译** —— dmg 只能在 macOS 上打，
   exe/msi 只能在 Windows 上打，所以每个平台都得在自己的机器上构建。
+- **dmg 任务用 `scripts/make-dmg.sh` 而不是裸的 `tauri build --bundles dmg`**：
+  CI runner 上没有可用的 GUI 会话，内嵌 `create-dmg` 的 AppleScript 排版会超时（-1712），
+  或卡在 `hdiutil detach`。脚本会先试原生打包（失败清场重试一次），再用 `hdiutil` 兜底出包，
+  避免一次偶发失败就整轮红掉。
 - Windows 任务走 `windows-latest` 的默认 MSVC 工具链（本地开发用的是 GNU/MinGW，
   两者产出等价）；仓库里没有 `.cargo/config` 强制工具链，直接跟默认走即可。
 - 上传到 Release 用 `gh release upload --clobber`，**同名文件会被覆盖** —— 也就是说

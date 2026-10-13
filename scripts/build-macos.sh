@@ -73,22 +73,29 @@ fi
 # rm -rf src-tauri/target/release/bundle
 
 # ── 6. 构建 ─────────────────────────────────────────────────
-BUNDLES="dmg"
-if [[ "${1:-}" == "--app-only" ]]; then
-  BUNDLES="app"
-fi
+HOST_TARGET="$(rustc -vV | awk '/^host:/{print $2}')"
 
-echo "==> 开始构建（bundles: $BUNDLES），首次构建会编译全部 Rust 依赖，耗时较长 …"
-npx tauri build --bundles "$BUNDLES"
+if [[ "${1:-}" == "--app-only" ]]; then
+  TARGET_DIR="src-tauri/target/release/bundle"
+  echo "==> 只构建 .app（调试用），首次构建会编译全部 Rust 依赖，耗时较长 …"
+  npx tauri build --bundles app
+else
+  TARGET_DIR="src-tauri/target/$HOST_TARGET/release/bundle"
+  echo "==> 开始构建 dmg，首次构建会编译全部 Rust 依赖，耗时较长 …"
+  # 直接跑 `tauri build --bundles dmg` 在无 GUI 会话（SSH / CI）里常常失败：
+  # 内嵌 create-dmg 用 AppleScript 遥控 Finder 排版会报 -1712。
+  # make-dmg.sh 会先试原生打包（失败清场重试），再用 hdiutil 兜底，详见其文件头注释。
+  bash scripts/make-dmg.sh "$HOST_TARGET"
+fi
 
 # ── 7. 输出结果 ─────────────────────────────────────────────
 echo ""
 echo "✅ 构建完成！产物位置："
-if [[ -d src-tauri/target/release/bundle/dmg ]]; then
-  ls -lh src-tauri/target/release/bundle/dmg/*.dmg 2>/dev/null | awk '{print "   📦 " $NF "  (" $5 ")"}'
+if [[ -d "$TARGET_DIR/dmg" ]]; then
+  ls -lh "$TARGET_DIR"/dmg/*.dmg 2>/dev/null | awk '{print "   📦 " $NF "  (" $5 ")"}'
 fi
-if [[ -d src-tauri/target/release/bundle/macos ]]; then
-  ls -d src-tauri/target/release/bundle/macos/*.app 2>/dev/null | awk '{print "   📱 " $NF}'
+if [[ -d "$TARGET_DIR/macos" ]]; then
+  ls -d "$TARGET_DIR"/macos/*.app 2>/dev/null | awk '{print "   📱 " $NF}'
 fi
 echo ""
 echo "提示：未签名的 dmg 首次打开会被 Gatekeeper 拦截，"

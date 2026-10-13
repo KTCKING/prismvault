@@ -73,14 +73,11 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
+      # 不直接跑 `tauri build --bundles dmg`：CI 上那步内嵌的 create-dmg 会因
+      # AppleScript 无法遥控 Finder 报 -1712，或卡在 hdiutil detach。
+      # make-dmg.sh 会先试原生打包（带清场重试），失败再用 hdiutil 兜底封包。
       - name: Build dmg
-        run: pnpm tauri build --target ${{ matrix.target }} --bundles dmg
-
-      - name: Collect artifacts
-        run: |
-          mkdir -p out
-          cp src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg out/
-          ls -lh out/
+        run: bash scripts/make-dmg.sh ${{ matrix.target }} out
 
       - name: Upload as workflow artifact
         uses: actions/upload-artifact@v4
