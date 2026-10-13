@@ -206,18 +206,29 @@ pnpm build:dmg          # = tauri build --bundles dmg
 > 正式对外分发建议做 **代码签名 + 公证（notarization）**，需要 Apple 开发者账号，
 > 在 `src-tauri/tauri.macos.conf.json` 中配置 `bundle.macOS.signingIdentity` 等参数。
 
-### macOS dmg（GitHub Actions 自动构建，推荐）
+### 全平台安装包（GitHub Actions 自动构建，推荐）
 
-仓库内置工作流 [`.github/workflows/build-dmg.yml`](.github/workflows/build-dmg.yml)，
-在 GitHub 的 macOS 机器上同时构建 **Apple Silicon** 与 **Intel** 两种架构的 dmg：
+仓库内置工作流 [`.github/workflows/build-installers.yml`](.github/workflows/build-installers.yml)，
+在 GitHub 的机器上一次性产出**两个平台的全部安装包**：
+
+| 平台 | Runner | 产物 |
+|------|--------|------|
+| macOS Apple Silicon | `macos-14`（aarch64） | `PrismVault_<ver>_aarch64.dmg` |
+| macOS Intel | `macos-15-intel`（x86_64） | `PrismVault_<ver>_x64.dmg` |
+| Windows x64 | `windows-latest`（MSVC） | `PrismVault_<ver>_x64-setup.exe`（NSIS）、`PrismVault_<ver>_x64_en-US.msi` |
 
 | 触发方式 | 结果 |
 |----------|------|
-| 推送 `v*` tag（如 `git tag v0.2.0 && git push origin v0.2.0`） | 构建完成后**自动创建 Release** 并附上两个 dmg |
-| Actions 页面点 **Run workflow** | 构建 dmg 并作为 **Artifact**（保留 90 天） |
+| 推送 `v*` tag（如 `git tag v0.2.0 && git push origin v0.2.0`） | 构建完成后**自动创建 Release** 并挂上全部四个安装包 |
+| Actions 页面点 **Run workflow** | 只产出 **Artifact**（保留 90 天）；填 `tag` 输入框可指定发布到某个已有 Release |
+| 推送普通提交到 `main` | **不触发**，避免消耗 macOS 构建配额 |
 
-- Apple Silicon 跑在 `macos-14`（aarch64），Intel 跑在 `macos-15-intel`（x86_64）。
-- 推送普通提交到 `main` **不会**触发构建，避免消耗 macOS 构建配额。
+- 为什么必须分三个 runner：**桌面安装包无法跨平台交叉编译** —— dmg 只能在 macOS 上打，
+  exe/msi 只能在 Windows 上打，所以每个平台都得在自己的机器上构建。
+- Windows 任务走 `windows-latest` 的默认 MSVC 工具链（本地开发用的是 GNU/MinGW，
+  两者产出等价）；仓库里没有 `.cargo/config` 强制工具链，直接跟默认走即可。
+- 上传到 Release 用 `gh release upload --clobber`，**同名文件会被覆盖** —— 也就是说
+  对同一个 tag 重跑一次工作流，就能把该 Release 的全部安装包刷新到当前代码。
 
 ### 平台专属配置
 
