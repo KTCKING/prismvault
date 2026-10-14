@@ -313,15 +313,19 @@ PrismVault 已内置自愈：**崩溃一次后自动改用软件渲染并持久�
 环境变量可用于人工干预：
 
 ```bash
-# 重新尝试硬件渲染（并重置状态）
+# 重新尝试硬件渲染（等价于在设置里选「硬件加速」，会把选择持久化）
 PRISMVAULT_FORCE_GPU=1 prismvault.exe
 # 强制软件渲染
 PRISMVAULT_FORCE_SOFTWARE_RENDER=1 prismvault.exe
 ```
 
+> **更推荐从界面里改**：设置 → 渲染 → 硬件加速 / 软件渲染。环境变量对双击快捷方式
+> 启动的用户基本不可达，而界面里的选择是持久化的（重启后生效），详见
+> [渲染方式（GPU）](#渲染方式gpu)。
+
 根治办法是把系统 WebView2 运行时修好（Windows「应用和功能」里找到
-**Microsoft Edge WebView2 Runtime** → 修改 → 修复），修好后再用
-`PRISMVAULT_FORCE_GPU=1` 启动一次即可恢复硬件加速。
+**Microsoft Edge WebView2 Runtime** → 修改 → 修复），修好后再选一次「硬件加速」
+（或 `PRISMVAULT_FORCE_GPU=1` 启动一次）即可恢复硬件加速。
 
 ### macOS 提示「已损坏，无法打开」
 
