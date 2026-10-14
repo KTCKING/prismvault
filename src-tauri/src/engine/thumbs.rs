@@ -13,6 +13,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use rayon::prelude::*;
@@ -83,6 +84,34 @@ pub struct ThumbProgress {
     pub running: bool,
 }
 
+/// 某个图库的「缩略图预热」进度。
+///
+/// 打开 / 导入 / 恢复图库时会自动把还缺缩略图的文件排进后台队列 —— 这就是
+/// 预热，默认启用，不需要用户点任何按钮。它和用户滚动触发的按需生成走的是
+/// 同一条流水线（同一个队列、同一张结果表），只是进度**按库单独统计**，
+/// 好让侧边栏在图库名旁边画一个圆形进度环。
+#[derive(Debug, Clone, Serialize)]
+pub struct WarmProgress {
+    pub library_id: String,
+    /// 本轮需要补齐的图片总数。
+    pub total: u64,
+    /// 已处理的数量。
+    pub done: u64,
+    /// 是否仍在处理（false = 本轮已结束，界面可以收起进度环）。
+    pub running: bool,
+}
+
+/// 单个库的预热状态。
+struct Warm {
+    total: u64,
+    done: u64,
+    /// 属于本轮预热的任务键。
+    ///
+    /// 用「任务键集合」而不是一个全局计数来统计，是为了把用户滚动触发的按需
+    /// 任务排除在外 —— 那些任务同样流经这条流水线，但它们不该算进预热进度里。
+    pending: HashSet<String>,
+}
+
 #[derive(Clone)]
 pub struct ThumbJob {
     /// 唯一键：网格图 `{library_id}|{file_path}`，预览图再加 `#preview` 后缀。
@@ -107,6 +136,8 @@ struct Inner {
     jobs: HashMap<String, ThumbJob>,
     /// key -> 缩略图路径；`None` 表示确定生成不出来，别再重试。
     results: HashMap<String, Option<String>>,
+    /// library_id -> 该库的预热进度。
+    warm: HashMap<String, Warm>,
     total: u64,
     done: u64,
     running: bool,
@@ -124,6 +155,8 @@ pub enum Priority {
 pub struct ThumbWorker {
     inner: Mutex<Inner>,
     app: Mutex<Option<AppHandle>>,
+    /// 打开 / 导入 / 恢复图库时是否自动在后台补齐缩略图。默认开启。
+    prewarm_enabled: AtomicBool,
     /// 专用的 rayon 线程池 —— 不用全局池是为了给解码单独限流，不让它吃满
     /// 所有核心和内存。
     pool: rayon::ThreadPool,
@@ -147,11 +180,13 @@ impl ThumbWorker {
                 bulk: VecDeque::new(),
                 jobs: HashMap::new(),
                 results: HashMap::new(),
+                warm: HashMap::new(),
                 total: 0,
                 done: 0,
                 running: false,
             }),
             app: Mutex::new(None),
+            prewarm_enabled: AtomicBool::new(true),
             pool,
         }
     }
@@ -190,6 +225,104 @@ impl ThumbWorker {
             .lock()
             .map(|g| ThumbProgress { total: g.total, done: g.done, running: g.running })
             .unwrap_or(ThumbProgress { total: 0, done: 0, running: false })
+    }
+
+    // ── 预热开关 ─────────────────────────────────────
+
+    /// 打开图库时是否自动补齐缩略图。默认开启；关掉后按需生成（滚动到哪张
+    /// 做哪张）仍然照常工作，手动「补齐缺失缩略图」也仍然可用。
+    pub fn set_prewarm_enabled(&self, on: bool) {
+        self.prewarm_enabled.store(on, Ordering::Relaxed);
+    }
+
+    pub fn prewarm_enabled(&self) -> bool {
+        self.prewarm_enabled.load(Ordering::Relaxed)
+    }
+
+    // ── 预热进度 ─────────────────────────────────────
+
+    /// 登记一轮预热，返回本轮实际需要补齐的数量。
+    ///
+    /// `keys` 是候选任务键。已经在结果表里出过结论的（上一轮就生成过、
+    /// 或已被判定为生成不出来）直接算作已完成，只把真正待办的那些挂进
+    /// `pending` —— 否则进度环会永远差那么几个到不了 100%。
+    pub fn begin_warm(&self, library_id: &str, keys: Vec<String>) -> u64 {
+        let Ok(mut g) = self.inner.lock() else { return 0 };
+
+        let mut pending: HashSet<String> = HashSet::new();
+        let mut done: u64 = 0;
+        for key in keys {
+            if g.results.contains_key(&key) {
+                done += 1;
+            } else {
+                pending.insert(key);
+            }
+        }
+        let total = done + pending.len() as u64;
+
+        let changed = g
+            .warm
+            .get(library_id)
+            .map(|w| w.total != total || w.done != done)
+            .unwrap_or(true);
+        g.warm.insert(library_id.to_string(), Warm { total, done, pending });
+        drop(g);
+
+        if changed {
+            self.emit("thumb-warm", self.all_warm_progress());
+        }
+        total
+    }
+
+    /// 某个库的预热进度；没有记录时返回一个空进度。
+    pub fn warm_progress(&self, library_id: &str) -> WarmProgress {
+        let slot = self.inner.lock().ok().and_then(|g| {
+            g.warm.get(library_id).map(|w| (w.total, w.done, w.pending.is_empty()))
+        });
+        match slot {
+            Some((total, done, finished)) => WarmProgress {
+                library_id: library_id.to_string(),
+                total,
+                done,
+                running: !finished,
+            },
+            None => WarmProgress {
+                library_id: library_id.to_string(),
+                total: 0,
+                done: 0,
+                running: false,
+            },
+        }
+    }
+
+    /// 所有库的预热进度 —— 前端订阅一次就能画出侧边栏上所有进度环。
+    pub fn all_warm_progress(&self) -> Vec<WarmProgress> {
+        self.inner
+            .lock()
+            .map(|g| {
+                g.warm
+                    .iter()
+                    .map(|(id, w)| WarmProgress {
+                        library_id: id.clone(),
+                        total: w.total,
+                        done: w.done,
+                        running: !w.pending.is_empty(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// 忘掉某个库的预热进度（关库时调用，避免进度环留在已关闭的库上）。
+    pub fn forget_warm(&self, library_id: &str) {
+        let removed = self
+            .inner
+            .lock()
+            .map(|mut g| g.warm.remove(library_id).is_some())
+            .unwrap_or(false);
+        if removed {
+            self.emit("thumb-warm", self.all_warm_progress());
+        }
     }
 
     /// 入队一批任务，必要时拉起 worker 线程。
@@ -383,16 +516,36 @@ impl ThumbWorker {
                     .collect()
             });
 
-            // 4. 登记结果（同时把任务从 jobs 里摘掉 —— 之后允许重试）。
-            let progress = {
+            // 4. 登记结果（同时把任务从 jobs 里摘掉 —— 之后允许重试），并推进
+            //    各图库的预热进度。
+            let (progress, warm_changed) = {
                 let Ok(mut g) = self.inner.lock() else { return };
                 g.done += generated.len() as u64;
                 for (key, _, item) in &generated {
                     g.jobs.remove(key);
                     g.results.insert(key.clone(), item.thumb.clone());
                 }
-                ThumbProgress { total: g.total, done: g.done, running: true }
+
+                // 预热进度只统计属于本轮预热批次的任务 —— 用户滚动触发的按需
+                // 任务压根不会出现在任何 `warm.pending` 里，自然不会误算。
+                let mut warm_changed = false;
+                for (key, _, _) in &generated {
+                    for w in g.warm.values_mut() {
+                        if w.pending.remove(key) {
+                            w.done += 1;
+                            warm_changed = true;
+                        }
+                    }
+                }
+
+                (
+                    ThumbProgress { total: g.total, done: g.done, running: true },
+                    warm_changed,
+                )
             };
+            if warm_changed {
+                self.emit("thumb-warm", self.all_warm_progress());
+            }
 
             // 5. 按类型分别推送：网格图走 `thumb-ready`，预览图走 `preview-ready`。
             let mut grid: Vec<ThumbReadyItem> = Vec::new();

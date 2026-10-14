@@ -59,11 +59,15 @@ export function ThumbnailCard(props: Props) {
   });
 
   onMount(() => {
+    // 父组件自己按渲染范围算窗口时（网格 / 列表模式的虚拟化）不会传这个回调，
+    // 那就完全不需要观察器 —— 2400 个 IntersectionObserver 的开销不小。
+    if (!props.onVisibleChange) return;
+
     // 只观察、不请求：进出视口的信号交给父组件，由它攒够一屏后**批量**提交
     // （并告诉后端这就是当前视口窗口）。以前每张卡片各自 invoke 一次，快速
     // 下滑时几百个请求同时抢后端那把引擎锁，越滑越慢。
     if (typeof IntersectionObserver === "undefined") {
-      props.onVisibleChange?.(true);
+      props.onVisibleChange(true);
       return;
     }
     const io = new IntersectionObserver(

@@ -57,6 +57,10 @@ export default function App() {
     // 降级到软件渲染。
     void api.uiReady();
 
+    // 先把「打开图库时是否自动补齐缩略图」的本地偏好推给后端，再恢复图库 ——
+    // 顺序反过来的话，用户明明关掉了预热，重启仍会被恢复流程先跑一整轮。
+    await ui.syncPrewarmToBackend();
+
     // Watchdog: force-clear loading after 3s even if restore hangs
     const watchdog = setTimeout(() => {
       library.setIsRestoring(false);

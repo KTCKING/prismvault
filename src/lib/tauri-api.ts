@@ -128,6 +128,15 @@ async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Promi
       return { total: 0, done: 0, running: false } as unknown as T;
     }
 
+    case "get_warm_progress":
+      return [] as unknown as T;
+
+    case "get_prewarm_enabled":
+      return true as unknown as T;
+
+    case "set_prewarm_enabled":
+      return undefined as unknown as T;
+
     case "build_missing_thumbnails":
       return 0 as unknown as T;
 
@@ -279,6 +288,22 @@ export interface ThumbnailResult {
 export interface ThumbProgress {
   total: number;
   done: number;
+  running: boolean;
+}
+
+/**
+ * 某个图库的「缩略图预热」进度。
+ *
+ * 打开 / 导入 / 恢复图库时会自动把还缺缩略图的文件排进后台队列（默认启用），
+ * 侧边栏据此在图库名旁边画一个圆形进度环。
+ */
+export interface WarmProgress {
+  library_id: string;
+  /** 本轮需要补齐的图片总数。 */
+  total: number;
+  /** 已处理数量。 */
+  done: number;
+  /** 是否仍在处理。 */
   running: boolean;
 }
 
@@ -438,6 +463,19 @@ export const api = {
   getThumbnailProgress: () =>
     invoke<ThumbProgress>("get_thumbnail_progress"),
 
+  /** 所有图库的缩略图预热进度（侧边栏库名旁的圆环）。 */
+  getWarmProgress: () =>
+    invoke<WarmProgress[]>("get_warm_progress"),
+
+  /** 读取「打开图库时后台补齐缩略图」开关。 */
+  getPrewarmEnabled: () =>
+    invoke<boolean>("get_prewarm_enabled"),
+
+  /** 设置「打开图库时后台补齐缩略图」。默认开启。 */
+  setPrewarmEnabled: (enabled: boolean) =>
+    invoke<void>("set_prewarm_enabled", { enabled }),
+
+  /** 手动补齐缺失缩略图（不受预热开关影响）。返回本轮排入队列的数量。 */
   buildMissingThumbnails: (libraryId: string) =>
     invoke<number>("build_missing_thumbnails", { libraryId }),
 

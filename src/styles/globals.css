@@ -157,9 +157,9 @@
   background: var(--bg-secondary);
   border: 2px solid transparent;
   box-shadow: var(--shadow);
-  /* 2400 张图全在 DOM 里时，让浏览器跳过视口外卡片的样式/布局/绘制。
-     卡片高度是显式写死的（size+40px），所以容器高度不受影响，
-     套索选择用的 getBoundingClientRect 也依然准确。 */
+  /* 网格 / 列表模式已经做了真虚拟化（DOM 里只剩可见的几十张），这里是双保险：
+     瀑布流模式没有虚拟化，浏览器仍会跳过视口外卡片的样式 / 布局 / 绘制。
+     卡片高度是显式写死的（size+40px），所以容器高度不受影响。 */
   content-visibility: auto;
   contain-intrinsic-size: auto 300px;
 }

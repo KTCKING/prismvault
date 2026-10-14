@@ -1,8 +1,9 @@
 import { For, Show, createSignal, onCleanup, createEffect } from "solid-js";
-import { useLibraryStore } from "@/stores/library";
+import { useLibraryStore, warmForLibrary } from "@/stores/library";
 import { useFilesStore } from "@/stores/files";
 import { useTagsStore } from "@/stores/tags";
 import { useUIStore, type SidebarTab } from "@/stores/ui";
+import { CircleProgress } from "./CircleProgress";
 import { open } from "@tauri-apps/plugin-dialog";
 
 export function Sidebar() {
@@ -321,6 +322,20 @@ export function Sidebar() {
                   }}>
                   <span class="text-xs">{lib.is_network ? "🌐" : "💻"}</span>
                   <span class="truncate">{lib.name}</span>
+
+                  {/* 缩略图预热进度：圆环 + 已处理数量。整库补完就自动收起。 */}
+                  <Show when={warmForLibrary(lib.id)}>
+                    {(w) => (
+                      <span
+                        class="flex items-center gap-1 flex-shrink-0"
+                        title={`正在生成缩略图：已处理 ${w().done} / ${w().total} 张`}
+                      >
+                        <CircleProgress value={w().done} max={w().total} />
+                        <span class="text-2xs tabular-nums" style={{ color: s.accent }}>{w().done}</span>
+                      </span>
+                    )}
+                  </Show>
+
                   <span class="ml-auto text-2xs tabular-nums flex-shrink-0" style={{ color: s.muted }}
                     title={`${lib.file_count} 个文件`}>
                     {lib.file_count > 0 ? lib.file_count.toLocaleString() : ""}

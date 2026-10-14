@@ -1,4 +1,4 @@
-import { For, Show, createSignal, createEffect, on, onMount, onCleanup } from "solid-js";
+import { For, Show, createSignal, createEffect, createMemo, on, onMount, onCleanup } from "solid-js";
 import { useFilesStore } from "@/stores/files";
 import { useUIStore } from "@/stores/ui";
 import { useViewerStore } from "@/stores/viewer";
@@ -6,7 +6,7 @@ import { useLibraryStore } from "@/stores/library";
 import { useTheme } from "@/stores/theme";
 import { ThumbnailCard } from "./ThumbnailCard";
 import { api } from "@/lib/tauri-api";
-import type { ThumbReadyItem, ThumbProgress, ThumbPlaceholderItem } from "@/lib/tauri-api";
+import type { FileInfo, ThumbReadyItem, ThumbProgress, ThumbPlaceholderItem } from "@/lib/tauri-api";
 import {
   thumbUrl, setThumbUrl, placeholderUrl, setPlaceholderUrl, clearThumbUrls, toDisplaySrc,
 } from "@/lib/thumbs";
@@ -34,6 +34,15 @@ const SCROLL_SPEED = 22;
 const FLUSH_DEBOUNCE_MS = 120;
 /** 兜底重扫时每批提交多少条（队列跑空后用来补漏掉的事件）。 */
 const RESYNC_CHUNK = 200;
+
+/** 网格卡片之间的间距 —— 对应 Tailwind 的 `gap-2`。 */
+const GRID_GAP = 8;
+/** 滚动容器的内边距 —— 对应 `p-3`（左右各 12px）。 */
+const CONTAINER_PAD = 12;
+/** 列表行的固定高度：`py-2`（上下各 8px）+ 40px 缩略图。 */
+const LIST_ROW_H = 58;
+/** 可见范围上下各多渲染几行，避免快速滚动时露出空白。 */
+const OVERSCAN_ROWS = 2;
 
 /** 日志里只留路径尾部，避免整条路径刷屏。 */
 const trail = (p: string, n = 42): string => (p.length > n ? `…${p.slice(-n)}` : p);
@@ -213,27 +222,6 @@ export function ThumbnailGrid() {
   };
 
   /**
-   * 列表视图的行没有用 ThumbnailCard，单独挂观察器维护窗口。
-   * 全表共用同一个 observer —— 列表一次可能渲染上百行，一行一个太浪费。
-   */
-  let listIO: IntersectionObserver | undefined;
-  const observeListRow = (el: HTMLDivElement | undefined) => {
-    if (!el) return;
-    if (!listIO) {
-      listIO = new IntersectionObserver(
-        (entries) => {
-          for (const e of entries) {
-            const p = (e.target as HTMLElement).dataset.path;
-            if (p) onCardVisibility(p, e.isIntersecting);
-          }
-        },
-        { rootMargin: "400px" },
-      );
-    }
-    listIO.observe(el);
-  };
-
-  /**
    * 安排一次窗口提交。
    *
    * 每来一个视口变化就**重置**计时器（去抖，不是节流）—— 只要还在滑，就一个
@@ -293,6 +281,105 @@ export function ThumbnailGrid() {
       void api.diagLog("window", `ERROR ${String(err)} ${trail(win[0] ?? "")}`);
     }
   };
+
+  // ── 虚拟化（网格 / 列表） ───────────────────────────
+  //
+  // 以前 <For each={files.files()}> 会把整库（实测 2400 张）全部挂进 DOM，只靠
+  // CSS `content-visibility` 顶着。在软件渲染（GPU 被禁）的机器上，几百个骨架屏
+  // 同时绘制本身就在抢解码线程的 CPU；而且每个卡片各自挂一个
+  // IntersectionObserver，窗口集合还要靠回调慢慢收敛。
+  //
+  // 现在只挂「可见 ± 2 行」的卡片，并把渲染范围**直接**当作后端要的视口窗口 ——
+  // 不再依赖观察器：范围由 scrollTop 同步算出来，滑得再快也不会漏报。
+  const [viewport, setViewport] = createSignal({ top: 0, width: 0, height: 0 });
+
+  interface VirtualLayout {
+    /** 本次要渲染的卡片切片。 */
+    slice: FileInfo[];
+    /** 切片在完整列表里的起始下标（双击进查看器要用全局下标）。 */
+    start: number;
+    /** 整个列表撑起的滚动高度。 */
+    totalHeight: number;
+    /** 切片相对列表顶部的偏移。 */
+    offsetY: number;
+    /** 网格列数；列表模式恒为 1。 */
+    columns: number;
+    /** 列模板，直接写进 `grid-template-columns`。 */
+    template: string;
+  }
+
+  /** 把容器的滚动位置与尺寸同步进信号（同一帧内的多次调用合并成一次）。 */
+  let viewportRaf = 0;
+  const syncViewport = () => {
+    viewportRaf = 0;
+    if (!containerRef) return;
+    const next = {
+      top: containerRef.scrollTop,
+      width: containerRef.clientWidth,
+      height: containerRef.clientHeight,
+    };
+    const prev = viewport();
+    if (prev.top !== next.top || prev.width !== next.width || prev.height !== next.height) {
+      setViewport(next);
+    }
+  };
+  const scheduleViewport = () => {
+    if (viewportRaf) return;
+    viewportRaf = requestAnimationFrame(syncViewport);
+  };
+
+  const virtual = createMemo<VirtualLayout | null>(() => {
+    const m = ui.viewMode();
+    if (m === "masonry") return null; // 瀑布流列高不均，不做虚拟化
+
+    const list = files.files();
+    const total = list.length;
+    const v = viewport();
+    const card = ui.thumbnailSize();
+    if (total === 0 || v.width <= 0 || v.height <= 0) return null;
+
+    const inner = Math.max(card, v.width - CONTAINER_PAD * 2);
+    const columns =
+      m === "list" ? 1 : Math.max(1, Math.floor((inner + GRID_GAP) / (card + GRID_GAP)));
+    const rowH = m === "list" ? LIST_ROW_H : card + 40 + GRID_GAP;
+    const rows = Math.ceil(total / columns);
+
+    const firstRow = Math.max(0, Math.floor(v.top / rowH) - OVERSCAN_ROWS);
+    const lastRow = Math.min(rows, Math.ceil((v.top + v.height) / rowH) + OVERSCAN_ROWS);
+    const start = Math.min(total, firstRow * columns);
+    const end = Math.min(total, lastRow * columns);
+
+    return {
+      slice: list.slice(start, end),
+      start,
+      totalHeight: Math.max(0, rows * rowH),
+      offsetY: firstRow * rowH,
+      columns,
+      template: `repeat(${columns}, minmax(0, 1fr))`,
+    };
+  });
+
+  /**
+   * 视口窗口 = 当前渲染范围。
+   *
+   * 范围变化（滚动跨过一行）就重算窗口并安排一次去抖提交 —— 去抖本身保证了
+   * 「还在滑就一个请求都不发」，所以这里可以放心地跟着滚动同步更新。
+   *
+   * 它同时承担「切视图模式时清空旧窗口」的职责：切模式会让整批卡片卸载，旧
+   * 路径若不清掉就会一直挂在窗口定义里，把真正可见的那批挤出去。两件事写在
+   * 同一个 effect 里，是为了避免两个 effect 争抢 `visiblePaths` 的执行顺序问题。
+   */
+  createEffect(on([ui.viewMode, virtual], ([m, v]) => {
+    visiblePaths.clear();
+    if (m !== "masonry" && v) {
+      const list = files.files();
+      for (let i = v.start; i < v.start + v.slice.length; i++) {
+        const p = list[i]?.path;
+        if (p) visiblePaths.add(p);
+      }
+    }
+    scheduleFlush();
+  }));
 
   /**
    * 兜底重扫：后台队列跑空后，把仍然没有结果的图重新问一遍。
@@ -417,6 +504,9 @@ export function ThumbnailGrid() {
 
   const handleScroll = () => {
     if (!containerRef) return;
+    // 先把滚动位置同步给虚拟化，再判断要不要续拉下一页 —— 两者互不依赖，
+    // 但先更新视口能让渲染范围在同一帧内跟上。
+    scheduleViewport();
     const { scrollTop, scrollHeight, clientHeight } = containerRef;
     if (scrollHeight - scrollTop - clientHeight < 600) {
       // 上一次分页还没回来就不要再发，否则同一页会被拉好几次。
@@ -568,27 +658,31 @@ export function ThumbnailGrid() {
     // Window-level capture so a click emitted right after a drag is swallowed
     // everywhere (e.g. it must not also "open" the trash it was dropped on).
     window.addEventListener("click", onClickCapture, true);
+
+    // 虚拟化需要知道容器有多大：先量一次，之后交给 ResizeObserver
+    // （窗口缩放、侧栏折叠、缩略图尺寸滑块都会改变它）。
+    syncViewport();
+    let ro: ResizeObserver | undefined;
+    if (typeof ResizeObserver !== "undefined") {
+      ro = new ResizeObserver(scheduleViewport);
+      ro.observe(containerRef);
+    }
+
     onCleanup(() => {
       containerRef.removeEventListener("scroll", handleScroll);
       containerRef.removeEventListener("mousedown", onContainerMouseDown);
       window.removeEventListener("click", onClickCapture, true);
+      if (viewportRaf) cancelAnimationFrame(viewportRaf);
+      ro?.disconnect();
       stopAutoScroll();
       drag = null;
       endCardDrag();
       detachPointerListeners();
-      listIO?.disconnect();
     });
   });
 
   const size = () => ui.thumbnailSize();
   const mode = () => ui.viewMode();
-
-  // 切换视图模式（网格/瀑布流/列表）会让整批卡片卸载重建：旧模式下记下的可见
-  // 路径必须清掉，否则它们会一直挂在窗口定义里，把真正可见的那批挤出去。
-  createEffect(on(mode, () => {
-    visiblePaths.clear();
-    scheduleFlush();
-  }));
 
   /** Show the context menu for one or more files (right-click). */
   const openFileContextMenu = (e: MouseEvent, path: string) => {
@@ -727,27 +821,37 @@ export function ThumbnailGrid() {
             </div>
           </div>
         }>
-          {/* Grid Mode */}
+          {/* Grid Mode —— 虚拟化：只挂「可见 ± 2 行」的卡片 */}
           <Show when={mode() === "grid"}>
-            <div class="grid gap-2" style={{
-              "grid-template-columns": `repeat(auto-fill, minmax(${size()}px, 1fr))`,
-              "grid-auto-rows": `${size() + 40}px`,
-            }}>
-              <For each={files.files()}>
-                {(file, index) => (
-                  <ThumbnailCard file={file} thumbnailUrl={thumbUrl(file.path)}
-                    placeholderUrl={placeholderUrl(file.path)}
-                    isSelected={files.selectedFiles().has(file.path)} size={size()}
-                    onSelect={(multi) => files.toggleSelect(file.path, multi)}
-                    onRatingChange={(r) => files.updateRating(file.path, r)}
-                    onOpen={() => { ui.setInfoPanelFile(file.path); ui.setInfoPanelOpen(true); }}
-                    onDoubleClick={() => viewer.open(files.files(), index())}
-                    onVisibleChange={(inView) => onCardVisibility(file.path, inView)}
-                    onImgError={(src) => handleImgError(file.path, src)}
-                    onContextMenu={openFileContextMenu} />
-                )}
-              </For>
-            </div>
+            <Show when={virtual()}>
+              {(v) => (
+                <div style={{ position: "relative", height: `${v().totalHeight}px` }}>
+                  <div class="grid gap-2" style={{
+                    position: "absolute",
+                    top: "0",
+                    left: "0",
+                    right: "0",
+                    "grid-template-columns": v().template,
+                    "grid-auto-rows": `${size() + 40}px`,
+                    transform: `translateY(${v().offsetY}px)`,
+                  }}>
+                    <For each={v().slice}>
+                      {(file, index) => (
+                        <ThumbnailCard file={file} thumbnailUrl={thumbUrl(file.path)}
+                          placeholderUrl={placeholderUrl(file.path)}
+                          isSelected={files.selectedFiles().has(file.path)} size={size()}
+                          onSelect={(multi) => files.toggleSelect(file.path, multi)}
+                          onRatingChange={(r) => files.updateRating(file.path, r)}
+                          onOpen={() => { ui.setInfoPanelFile(file.path); ui.setInfoPanelOpen(true); }}
+                          onDoubleClick={() => viewer.open(files.files(), v().start + index())}
+                          onImgError={(src) => handleImgError(file.path, src)}
+                          onContextMenu={openFileContextMenu} />
+                      )}
+                    </For>
+                  </div>
+                </div>
+              )}
+            </Show>
           </Show>
 
           {/* Masonry Mode (CSS columns) */}
@@ -775,61 +879,73 @@ export function ThumbnailGrid() {
             </div>
           </Show>
 
-          {/* List Mode */}
+          {/* List Mode —— 同样虚拟化：行高固定，按行切片 */}
           <Show when={mode() === "list"}>
-            <div class="flex flex-col gap-0.5">
-              <For each={files.files()}>
-                {(file, index) => (
-                  <div
-                    ref={(el) => observeListRow(el)}
-                    class="flex items-center gap-3 px-3 py-2 rounded cursor-pointer transition-colors"
-                    data-path={file.path}
-                    style={{ background: files.selectedFiles().has(file.path) ? "var(--accent-bg)" : "transparent" }}
-                    onClick={(e) => { files.toggleSelect(file.path, e.ctrlKey || e.metaKey); ui.setInfoPanelFile(file.path); ui.setInfoPanelOpen(true); }}
-                    onContextMenu={(e) => openFileContextMenu(e, file.path)}
-                    onDblClick={() => viewer.open(files.files(), index())}
-                  >
-                    <div class="relative w-10 h-10 flex-shrink-0 rounded overflow-hidden" style={{ background: "var(--bg-tertiary)" }}>
-                      <Show when={placeholderUrl(file.path)}>
-                        {(ph) => (
-                          <img src={toDisplaySrc(ph())} alt="" aria-hidden="true"
-                            class="absolute inset-0 w-full h-full object-cover lqip"
-                            draggable={false} decoding="async" />
-                        )}
-                      </Show>
-                      <Show when={thumbUrl(file.path)} fallback={
-                        <Show when={!placeholderUrl(file.path)}>
-                          <div class="w-full h-full skeleton" />
-                        </Show>
-                      }>
-                        {(url) => (
-                          <img
-                            src={toDisplaySrc(url())}
-                            alt={file.filename} class="relative w-full h-full object-cover" draggable={false}
-                            decoding="async"
-                            onError={async (e) => {
-                              const el = e.currentTarget as HTMLImageElement;
-                              const fixed = await handleImgError(file.path, el.src);
-                              if (!fixed) el.style.visibility = "hidden";
-                            }}
-                          />
-                        )}
-                      </Show>
-                    </div>
-                    <div class="flex-1 min-w-0">
-                      <div class="text-sm font-medium truncate" style={{ color: s.text }}>{file.filename}</div>
-                      <div class="text-xs" style={{ color: s.muted }}>
-                        {file.width && file.height ? `${file.width}×${file.height}` : formatSize(file.size_bytes)} · {file.extension.toUpperCase()}
-                      </div>
-                    </div>
-                    <div class="text-xs" style={{ color: s.muted }}>{new Date(file.mtime).toLocaleDateString()}</div>
-                    <Show when={file.rating}>
-                      <div class="text-xs" style={{ color: "var(--star-color)" }}>{"★".repeat(file.rating || 0)}</div>
-                    </Show>
+            <Show when={virtual()}>
+              {(v) => (
+                <div style={{ position: "relative", height: `${v().totalHeight}px` }}>
+                  <div class="flex flex-col" style={{
+                    position: "absolute", top: "0", left: "0", right: "0",
+                    transform: `translateY(${v().offsetY}px)`,
+                  }}>
+                    <For each={v().slice}>
+                      {(file, index) => (
+                        <div
+                          class="flex items-center gap-3 px-3 py-2 rounded cursor-pointer transition-colors"
+                          data-path={file.path}
+                          style={{
+                            height: "56px",
+                            "margin-bottom": "2px",
+                            background: files.selectedFiles().has(file.path) ? "var(--accent-bg)" : "transparent",
+                          }}
+                          onClick={(e) => { files.toggleSelect(file.path, e.ctrlKey || e.metaKey); ui.setInfoPanelFile(file.path); ui.setInfoPanelOpen(true); }}
+                          onContextMenu={(e) => openFileContextMenu(e, file.path)}
+                          onDblClick={() => viewer.open(files.files(), v().start + index())}
+                        >
+                          <div class="relative w-10 h-10 flex-shrink-0 rounded overflow-hidden" style={{ background: "var(--bg-tertiary)" }}>
+                            <Show when={placeholderUrl(file.path)}>
+                              {(ph) => (
+                                <img src={toDisplaySrc(ph())} alt="" aria-hidden="true"
+                                  class="absolute inset-0 w-full h-full object-cover lqip"
+                                  draggable={false} decoding="async" />
+                              )}
+                            </Show>
+                            <Show when={thumbUrl(file.path)} fallback={
+                              <Show when={!placeholderUrl(file.path)}>
+                                <div class="w-full h-full skeleton" />
+                              </Show>
+                            }>
+                              {(url) => (
+                                <img
+                                  src={toDisplaySrc(url())}
+                                  alt={file.filename} class="relative w-full h-full object-cover" draggable={false}
+                                  decoding="async"
+                                  onError={async (e) => {
+                                    const el = e.currentTarget as HTMLImageElement;
+                                    const fixed = await handleImgError(file.path, el.src);
+                                    if (!fixed) el.style.visibility = "hidden";
+                                  }}
+                                />
+                              )}
+                            </Show>
+                          </div>
+                          <div class="flex-1 min-w-0">
+                            <div class="text-sm font-medium truncate" style={{ color: s.text }}>{file.filename}</div>
+                            <div class="text-xs" style={{ color: s.muted }}>
+                              {file.width && file.height ? `${file.width}×${file.height}` : formatSize(file.size_bytes)} · {file.extension.toUpperCase()}
+                            </div>
+                          </div>
+                          <div class="text-xs" style={{ color: s.muted }}>{new Date(file.mtime).toLocaleDateString()}</div>
+                          <Show when={file.rating}>
+                            <div class="text-xs" style={{ color: "var(--star-color)" }}>{"★".repeat(file.rating || 0)}</div>
+                          </Show>
+                        </div>
+                      )}
+                    </For>
                   </div>
-                )}
-              </For>
-            </div>
+                </div>
+              )}
+            </Show>
           </Show>
         </Show>
       </div>
