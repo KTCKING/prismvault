@@ -504,6 +504,10 @@ export function ThumbnailGrid() {
 
   const handleScroll = () => {
     if (!containerRef) return;
+    // 交互感知节流：告诉后台「用户正在滚动」，接下来约 0.5 秒它会暂停整库
+    // 预热、只做当前视口的任务，把 CPU 让给渲染。函数内部已限流（120ms）+
+    // fire-and-forget，所以这里可以每帧无脑调。
+    api.notifyInteraction();
     // 先把滚动位置同步给虚拟化，再判断要不要续拉下一页 —— 两者互不依赖，
     // 但先更新视口能让渲染范围在同一帧内跟上。
     scheduleViewport();
@@ -590,6 +594,8 @@ export function ThumbnailGrid() {
       d.active = true;
       startAutoScroll();
     }
+    // 拖拽框选同样会让后台让路（内部限流，见 api.notifyInteraction）。
+    api.notifyInteraction();
     refreshMarquee(e.clientX, e.clientY);
   };
 

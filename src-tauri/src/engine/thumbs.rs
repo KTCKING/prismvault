@@ -13,7 +13,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use rayon::prelude::*;
@@ -38,6 +38,22 @@ const MAX_PARALLEL: usize = 4;
 
 /// 进度事件的最小间隔（毫秒），避免刷屏。
 const PROGRESS_INTERVAL_MS: u128 = 300;
+
+/// 用户交互后的「静默窗口」（毫秒）。
+///
+/// 在这个窗口内后台只处理 urgent（用户此刻盯着的那一屏），整库预热队列
+/// （bulk）整个停下来，把 CPU 让给界面渲染。窗口一过自动恢复满速 ——
+/// 所以前端**不需要**再上报一次「我停下来了」。
+///
+/// 460ms 的取法：比常见滚动惯性停顿（约 300–400ms）略长一点，免得手指连续
+/// 滑动的间隙里后台插进来抢 CPU；又不至于长到预热肉眼可见地变慢。
+const INTERACTION_QUIET_MS: u64 = 460;
+
+/// 静默窗口内每轮之间让出的时间（毫秒）。
+///
+/// 不能直接 `continue` 空转 —— 那还是满核空转，等于没让。睡一下才真把 CPU
+/// 还回去；60ms 也保证了交互一停就能在下一轮立刻恢复满速。
+const THROTTLE_YIELD_MS: u64 = 60;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ThumbReadyItem {
@@ -160,6 +176,10 @@ pub struct ThumbWorker {
     /// 专用的 rayon 线程池 —— 不用全局池是为了给解码单独限流，不让它吃满
     /// 所有核心和内存。
     pool: rayon::ThreadPool,
+    /// 最近一次「用户正在交互」的时间戳（相对 `epoch` 的毫秒数；0 = 从未上报）。
+    interaction_ms: AtomicU64,
+    /// `interaction_ms` 的时基。用单调时钟，不受系统时间被调整的影响。
+    epoch: std::time::Instant,
 }
 
 impl ThumbWorker {
@@ -195,6 +215,8 @@ impl ThumbWorker {
             app: Mutex::new(None),
             prewarm_enabled: AtomicBool::new(true),
             pool,
+            interaction_ms: AtomicU64::new(0),
+            epoch: std::time::Instant::now(),
         }
     }
 
@@ -244,6 +266,28 @@ impl ThumbWorker {
 
     pub fn prewarm_enabled(&self) -> bool {
         self.prewarm_enabled.load(Ordering::Relaxed)
+    }
+
+    // ── 交互感知节流 ─────────────────────────────────
+
+    /// 前端上报「用户正在滚动 / 拖拽」。
+    ///
+    /// 后台据此在接下来 [`INTERACTION_QUIET_MS`] 内暂停整库预热，把 CPU 让给
+    /// 界面。判断完全基于时间戳，静默窗口到期自动恢复满速，所以既不需要
+    /// 「交互结束」的上报，也不需要加锁 —— 前端可以放心地在滚动回调里频繁调，
+    /// 限流放在前端（约 120ms 一次）。
+    pub fn note_interaction(&self) {
+        self.interaction_ms
+            .store(self.epoch.elapsed().as_millis() as u64, Ordering::Relaxed);
+    }
+
+    /// 是否处于「用户正在交互」的静默窗口内。
+    fn is_interacting(&self) -> bool {
+        let last = self.interaction_ms.load(Ordering::Relaxed);
+        if last == 0 {
+            return false;
+        }
+        (self.epoch.elapsed().as_millis() as u64).saturating_sub(last) < INTERACTION_QUIET_MS
     }
 
     // ── 预热进度 ─────────────────────────────────────
@@ -449,13 +493,25 @@ impl ThumbWorker {
 
         loop {
             // 1. 取一批任务（urgent 优先）；两个队列都空则收工。
-            let batch: Vec<ThumbJob> = {
+            //
+            //    用户正在滚动 / 拖拽时（`is_interacting`）**只取 urgent**：bulk 是
+            //    「整库慢慢补齐」，晚几百毫秒无所谓；urgent 是用户此刻盯着的那一屏，
+            //    必须继续做。这就是「交互感知节流」——后台在最需要 CPU 的时候让路，
+            //    人一停手自动恢复满速。
+            let interacting = self.is_interacting();
+            let (batch, yielded): (Vec<ThumbJob>, bool) = {
                 let Ok(mut g) = self.inner.lock() else { return };
                 let mut batch: Vec<ThumbJob> = Vec::with_capacity(BATCH);
                 while batch.len() < BATCH {
                     // urgent 用**后进先出**：最近提交的窗口就是用户此刻盯着的那一屏，
                     // 先解它们。整库补齐（bulk）保持先进先出，按 mtime 顺序推进。
-                    let key = match g.urgent.pop_back().or_else(|| g.bulk.pop_front()) {
+                    let key = match g.urgent.pop_back() {
+                        Some(key) => Some(key),
+                        // 交互期间不碰 bulk —— 直接结束本批。
+                        None if interacting => None,
+                        None => g.bulk.pop_front(),
+                    };
+                    let key = match key {
                         Some(key) => key,
                         None => break,
                     };
@@ -463,7 +519,15 @@ impl ThumbWorker {
                         batch.push(job.clone());
                     }
                 }
-                if batch.is_empty() {
+
+                if !batch.is_empty() {
+                    (batch, false)
+                } else if !g.bulk.is_empty() {
+                    // 还有活，只是被交互让出去了。这里**必须保持 running**，
+                    // 不能走下面「两个队列都空」的收工分支 —— 否则预热会永久停摆，
+                    // 只能等下次入队才重新拉起 worker。
+                    (Vec::new(), true)
+                } else {
                     // 同一个锁里判断 + 复位，避免和 enqueue 抢跑：要么 enqueue
                     // 已经插了新任务（这里看的队列非空），要么它之后看到
                     // running == false 并重新拉线程。
@@ -473,8 +537,12 @@ impl ThumbWorker {
                     self.emit("thumb-progress", progress);
                     return;
                 }
-                batch
             };
+
+            if yielded {
+                std::thread::sleep(std::time::Duration::from_millis(THROTTLE_YIELD_MS));
+                continue;
+            }
 
             // 2. 占位图快扫 —— 必须在解码**之前**推出去。
             //

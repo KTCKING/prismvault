@@ -561,6 +561,18 @@ pub async fn set_prewarm_enabled(enabled: bool, state: State<'_, AppState>) -> R
     Ok(())
 }
 
+/// 前端上报「用户正在滚动 / 拖拽」——触发后台的交互感知节流。
+///
+/// 后台收到后会在接下来约 0.5 秒内**暂停整库预热队列**，只继续做用户当前
+/// 视口（urgent）的任务，把 CPU 让给界面渲染。不需要「交互结束」的上报：
+/// 静默窗口到期自动恢复满速，所以前端可以在滚动回调里放心频繁调用
+/// （前端已做约 120ms 的限流）。
+#[tauri::command]
+pub async fn thumbs_interaction(state: State<'_, AppState>) -> Result<(), String> {
+    state.thumbs.note_interaction();
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn open_in_explorer(file_path: String) -> Result<(), String> {
     #[cfg(target_os = "windows")]

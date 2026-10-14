@@ -1,5 +1,5 @@
-import { createSignal, Show } from "solid-js";
-import { api, type ImportSummary } from "@/lib/tauri-api";
+import { createSignal, onMount, Show } from "solid-js";
+import { api, type GpuMode, type GpuStatus, type ImportSummary } from "@/lib/tauri-api";
 import { useLibraryStore, warmForLibrary } from "@/stores/library";
 import { useUIStore } from "@/stores/ui";
 import { CircleProgress } from "./CircleProgress";
@@ -18,6 +18,35 @@ export function SettingsModal(props: Props) {
   const [busy, setBusy] = createSignal(false);
   const [result, setResult] = createSignal<ImportSummary | null>(null);
   const [error, setError] = createSignal("");
+  const [gpu, setGpu] = createSignal<GpuStatus | null>(null);
+  const [gpuBusy, setGpuBusy] = createSignal(false);
+
+  onMount(async () => {
+    try {
+      setGpu(await api.getGpuStatus());
+    } catch {
+      /* 拿不到就按「未知」渲染，不影响其它设置项 */
+    }
+  });
+
+  /** 切换渲染方式。改完立刻落盘，但要重启才生效（WebView2 参数只能在建窗时传）。 */
+  const pickGpuMode = async (mode: GpuMode) => {
+    setGpuBusy(true);
+    try {
+      setGpu(await api.setGpuMode(mode));
+      ui.showToast("渲染方式已保存，重启应用后生效", "success");
+    } catch (e) {
+      ui.showToast(`切换失败：${String(e)}`, "error");
+    } finally {
+      setGpuBusy(false);
+    }
+  };
+
+  const GPU_LABELS: { value: GpuMode; label: string }[] = [
+    { value: "auto", label: "自动" },
+    { value: "hardware", label: "硬件加速" },
+    { value: "software", label: "软件渲染" },
+  ];
 
   /** 当前活动图库的预热进度（可能没有 —— 表示已经补完或还没开始）。 */
   const activeWarm = () => {
@@ -135,6 +164,56 @@ export function SettingsModal(props: Props) {
               )}
             </Show>
           </div>
+        </div>
+
+        {/* ── 渲染 ─────────────────────────────────────────── */}
+        <div class="text-sm mb-3" style={{ color: s.secondary }}>渲染</div>
+
+        <div class="px-4 py-3 rounded-lg mb-5" style={{ background: s.tertiary, border: `1px solid ${s.border}` }}>
+          <div class="flex items-center gap-2">
+            <span class="text-sm flex-1" style={{ color: s.primary }}>硬件加速（GPU 渲染）</span>
+            <Show when={gpu()}>
+              {(g) => (
+                <span class="text-xs px-1.5 py-0.5 rounded"
+                  style={{
+                    background: g().software_rendering ? "var(--bg-secondary)" : "var(--accent-bg)",
+                    color: g().software_rendering ? s.muted : s.accent,
+                  }}
+                >
+                  当前：{g().software_rendering ? "软件渲染" : "硬件渲染"}
+                </span>
+              )}
+            </Show>
+          </div>
+
+          <div class="text-xs mt-0.5 leading-relaxed" style={{ color: s.muted }}>
+            自动：GPU 能起就用，崩过一次就退回软件渲染并记住；硬件加速：强制再试一次
+            （仍然保留崩溃保护，真崩了下次会自动退回，不会卡在白屏）；软件渲染：完全不用
+            GPU —— 省电，也能避开某些显卡驱动的画面异常。
+          </div>
+
+          <div class="mt-3 flex items-center gap-2">
+            {GPU_LABELS.map((m) => (
+              <button
+                class="btn-secondary text-xs px-2.5 py-1"
+                disabled={gpuBusy() || !gpu()}
+                style={{
+                  background: gpu()?.mode === m.value ? s.accent : undefined,
+                  color: gpu()?.mode === m.value ? "#fff" : undefined,
+                }}
+                onClick={() => pickGpuMode(m.value)}
+              >{m.label}</button>
+            ))}
+          </div>
+
+          <Show when={gpu()?.crashed_last_run && gpu()?.mode === "auto"}>
+            <div class="mt-2 text-xs leading-relaxed" style={{ color: "var(--text-secondary)" }}>
+              上次启动没有正常渲染完成，已自动改用软件渲染。把显卡驱动或系统里的
+              Microsoft Edge WebView2 Runtime 修好之后，可以再选「硬件加速」试一次。
+            </div>
+          </Show>
+
+          <div class="mt-2 text-xs" style={{ color: s.muted }}>改动需要重启应用才生效。</div>
         </div>
 
         <div class="text-sm mb-4" style={{ color: s.secondary }}>从其它素材管理软件导入资源库</div>
