@@ -11,7 +11,7 @@
 //!   * 后台 worker 按批次并行消费队列，结果通过 `thumb-ready` /
 //!     `thumb-progress` 事件推给前端。
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -45,6 +45,16 @@ pub struct ThumbReadyItem {
     /// 缩略图文件路径；为 `None` 表示生成失败（例如 RAW/PSD 这类解码器不认
     /// 的格式），前端会退回原图交给 WebView 自己解。
     pub thumb: Option<String>,
+}
+
+/// `thumb-placeholder` 事件的载荷元素：一张图的模糊占位图。
+///
+/// `data` 是 32px JPEG 的 data URL（约 1 KB），前端把它铺满卡片并加一层模糊，
+/// 于是「真图还没轮到」的格子看起来是「已经有了、正在变清晰」，而不是一片空白。
+#[derive(Debug, Clone, Serialize)]
+pub struct ThumbPlaceholder {
+    pub path: String,
+    pub data: String,
 }
 
 /// 任务类型：网格缩略图 / 右侧预览图。两者共用同一条流水线，只是输出尺寸不同。
@@ -184,18 +194,58 @@ impl ThumbWorker {
 
     /// 入队一批任务，必要时拉起 worker 线程。
     pub fn enqueue(self: &Arc<Self>, jobs: Vec<ThumbJob>) {
-        self.enqueue_with(jobs, Priority::Bulk);
+        self.submit(jobs, Priority::Bulk, None);
     }
 
     /// 入队并指定优先级。`Urgent` 会插到整库补齐的前面：用户滚到哪儿，哪儿的
     /// 缩略图就先出来，不必等整库的批处理跑完。
     pub fn enqueue_with(self: &Arc<Self>, jobs: Vec<ThumbJob>, priority: Priority) {
-        if jobs.is_empty() {
+        self.submit(jobs, priority, None);
+    }
+
+    /// 以「当前视口窗口」的身份入队。
+    ///
+    /// 除了插队，还做一件关键的事：**把窗口外的 urgent 任务降级回整库队列**。
+    /// 没有这一步的话，快速下滑会把滑过去的每一屏都塞进 urgent，而 urgent 是
+    /// 按入队顺序消费的 —— 用户真正盯着的这一屏反而排在那几百张后面，于是
+    /// 「滑得越快，白块越久」。降级之后，队列里只剩当前窗口，滑过去没看到的
+    /// 那些交给整库补齐慢慢做（滑回来时会重新提权）。
+    pub fn enqueue_window(self: &Arc<Self>, jobs: Vec<ThumbJob>, window: &HashSet<String>) {
+        self.submit(jobs, Priority::Urgent, Some(window));
+    }
+
+    /// 入队的统一入口：窗口降级 → 自我修复 → 去重入队 → 必要时拉起 worker。
+    fn submit(
+        self: &Arc<Self>,
+        jobs: Vec<ThumbJob>,
+        priority: Priority,
+        window: Option<&HashSet<String>>,
+    ) {
+        // 没有新任务、也没有要维护的窗口，就没必要碰锁。
+        if jobs.is_empty() && window.is_none() {
             return;
         }
 
         let start = {
             let Ok(mut g) = self.inner.lock() else { return };
+
+            if let Some(window) = window {
+                let mut kept: VecDeque<String> = VecDeque::new();
+                let mut demoted: Vec<String> = Vec::new();
+                for key in g.urgent.drain(..) {
+                    if window.contains(&key) {
+                        kept.push_back(key);
+                    } else {
+                        demoted.push(key);
+                    }
+                }
+                g.urgent = kept;
+                for key in demoted {
+                    if g.jobs.contains_key(&key) {
+                        g.bulk.push_back(key);
+                    }
+                }
+            }
 
             // 自我修复：队列空了但还有「排队中/解码中」的任务、worker 又没在跑，
             // 说明上一批任务丢了（线程异常退出）。把它们重新排进去，
@@ -213,7 +263,6 @@ impl ThumbWorker {
                 if g.results.contains_key(&key) {
                     continue;
                 }
-                let queued = g.jobs.contains_key(&key);
                 if priority == Priority::Urgent {
                     // 还在批处理队列里的话直接提上来。
                     if let Some(pos) = g.bulk.iter().position(|k| *k == key) {
@@ -222,7 +271,7 @@ impl ThumbWorker {
                         continue;
                     }
                 }
-                if queued {
+                if g.jobs.contains_key(&key) {
                     continue;
                 }
                 g.jobs.insert(key.clone(), job);
@@ -264,7 +313,9 @@ impl ThumbWorker {
                 let Ok(mut g) = self.inner.lock() else { return };
                 let mut batch: Vec<ThumbJob> = Vec::with_capacity(BATCH);
                 while batch.len() < BATCH {
-                    let key = match g.urgent.pop_front().or_else(|| g.bulk.pop_front()) {
+                    // urgent 用**后进先出**：最近提交的窗口就是用户此刻盯着的那一屏，
+                    // 先解它们。整库补齐（bulk）保持先进先出，按 mtime 顺序推进。
+                    let key = match g.urgent.pop_back().or_else(|| g.bulk.pop_front()) {
                         Some(key) => key,
                         None => break,
                     };
@@ -285,7 +336,29 @@ impl ThumbWorker {
                 batch
             };
 
-            // 2. 并行解码 —— 不持有任何锁，也不持有 engine 锁。
+            // 2. 占位图快扫 —— 必须在解码**之前**推出去。
+            //
+            //    只读文件头取 EXIF 内嵌缩略图（毫秒级，不解原图），压成 32px 后
+            //    推给前端当模糊底。这样即使这张图的 448px 缩略图还要排队几百毫秒，
+            //    用户也已经"看见轮廓"了。没有内嵌图的（PNG / 截图）这一步会失败，
+            //    等第 3 步解码完用缩略图补，下一次滑到这片区域就是即时命中。
+            let placeholders: Vec<ThumbPlaceholder> = self.pool.install(|| {
+                batch
+                    .par_iter()
+                    .filter(|job| job.kind == ThumbKind::Grid)
+                    .filter_map(|job| {
+                        job.engine
+                            .make_placeholder(&job.source, &job.hash)
+                            .ok()
+                            .map(|data| ThumbPlaceholder { path: job.path.clone(), data })
+                    })
+                    .collect()
+            });
+            if !placeholders.is_empty() {
+                self.emit("thumb-placeholder", placeholders);
+            }
+
+            // 3. 并行解码 —— 不持有任何锁，也不持有 engine 锁。
             //    单个文件解码失败（RAW / PSD / 损坏文件）只影响它自己。
             let generated: Vec<(String, ThumbKind, ThumbReadyItem)> = self.pool.install(|| {
                 batch
@@ -299,12 +372,18 @@ impl ThumbWorker {
                             .ok()
                             .filter(|p| p.exists())
                             .map(|p| p.to_string_lossy().to_string());
+                        // 没有 EXIF 内嵌图的那批（PNG / 截图）在这里补占位图缓存：
+                        // 解码一张 448px 的 JPEG 只要几毫秒，代价可以忽略，换来
+                        // 的是下次滑到这片区域立刻有模糊底。
+                        if let (ThumbKind::Grid, Some(t)) = (job.kind, thumb.as_deref()) {
+                            let _ = job.engine.placeholder_from_thumb(std::path::Path::new(t), &job.hash);
+                        }
                         (job.key, job.kind, ThumbReadyItem { path: job.path, thumb })
                     })
                     .collect()
             });
 
-            // 3. 登记结果（同时把任务从 jobs 里摘掉 —— 之后允许重试）。
+            // 4. 登记结果（同时把任务从 jobs 里摘掉 —— 之后允许重试）。
             let progress = {
                 let Ok(mut g) = self.inner.lock() else { return };
                 g.done += generated.len() as u64;
@@ -315,7 +394,7 @@ impl ThumbWorker {
                 ThumbProgress { total: g.total, done: g.done, running: true }
             };
 
-            // 4. 按类型分别推送：网格图走 `thumb-ready`，预览图走 `preview-ready`。
+            // 5. 按类型分别推送：网格图走 `thumb-ready`，预览图走 `preview-ready`。
             let mut grid: Vec<ThumbReadyItem> = Vec::new();
             let mut preview: Vec<ThumbReadyItem> = Vec::new();
             for (_, kind, item) in generated {

@@ -110,8 +110,17 @@ async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Promi
     case "delete_file":
       return null as unknown as T;
 
-    case "get_thumbnail_path":
+    case "get_thumbnails":
     case "get_preview_path": {
+      const paths = (args?.paths as string[]) || [];
+      if (cmd === "get_thumbnails") {
+        return paths.map((p) => ({
+          path: p,
+          status: "ready",
+          thumb: "/placeholder.svg",
+          placeholder: "",
+        })) as unknown as T;
+      }
       return { status: "ready", path: "/placeholder.svg" } as unknown as T;
     }
 
@@ -279,6 +288,21 @@ export interface ThumbReadyItem {
   thumb: string | null;
 }
 
+/** `thumb-placeholder` 事件的载荷元素：一张图的模糊占位图（32px data URL）。 */
+export interface ThumbPlaceholderItem {
+  path: string;
+  data: string;
+}
+
+/** `get_thumbnails` 批量查询里的一项。 */
+export interface ThumbBatchItem {
+  path: string;
+  status: "ready" | "fallback" | "pending";
+  thumb: string;
+  /** 已缓存的模糊占位图（32px data URL）；没有则为空串。 */
+  placeholder: string;
+}
+
 export interface NasStatus {
   status: "local" | "online" | "degraded" | "offline";
   latency_ms: number;
@@ -383,8 +407,17 @@ export const api = {
   emptyTrash: (libraryId: string) =>
     invoke<number>("empty_trash", { libraryId }),
 
-  getThumbnailPath: (libraryId: string, filePath: string) =>
-    invoke<ThumbnailResult>("get_thumbnail_path", { libraryId, filePath }),
+  /**
+   * 批量取一组图片的缩略图状态。
+   *
+   * 整屏打包成一次调用（而不是每张卡片一次 invoke）：后端只需要取一次引擎锁、
+   * 走一次遍历。
+   *
+   * `window` 是可选声明：传了就表示"这批就是用户此刻在看的"，后台会把窗口外
+   * 还没做完的排队任务降级回整库队列；整库兜底重扫不要传。
+   */
+  getThumbnails: (libraryId: string, paths: string[], window?: string[]) =>
+    invoke<ThumbBatchItem[]>("get_thumbnails", { libraryId, paths, window }),
 
   /** 右侧预览栏用的 1600px 预览图（按需生成，结果走 `preview-ready` 事件）。 */
   getPreviewPath: (libraryId: string, filePath: string) =>

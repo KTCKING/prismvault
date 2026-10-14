@@ -5,15 +5,15 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "dev:tauri": "tauri dev",
-    "build": "vite build",
-    "build:tauri": "tauri build",
-    "build:dmg": "tauri build --bundles dmg",
+    "dev": "node node_modules/vite/bin/vite.js",
+    "dev:tauri": "node node_modules/@tauri-apps/cli/tauri.js dev",
+    "build": "node node_modules/vite/bin/vite.js build",
+    "build:tauri": "node node_modules/@tauri-apps/cli/tauri.js build",
+    "build:dmg": "node node_modules/@tauri-apps/cli/tauri.js build --bundles dmg",
     "build:mac": "bash scripts/build-macos.sh",
     "postbuild:tauri": "node scripts/open-bundle.cjs",
-    "preview": "vite preview",
-    "tauri": "tauri"
+    "preview": "node node_modules/vite/bin/vite.js preview",
+    "tauri": "node node_modules/@tauri-apps/cli/tauri.js"
   },
   "dependencies": {
     "@crabnebula/tauri-plugin-drag": "^2.1.0",

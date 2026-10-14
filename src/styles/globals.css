@@ -171,6 +171,15 @@
   border-color: var(--accent);
   background: var(--accent-bg);
 }
+
+/* 模糊占位图（LQIP）：32px 的小图被 object-cover 拉满整格，本身已经很糊，
+   再叠一层 blur 让色块过渡自然；轻微放大是为了把模糊产生的半透明边缘推出
+   可视区，否则四边会有一圈变淡的框。 */
+.lqip {
+  filter: blur(10px);
+  transform: scale(1.08);
+  transform-origin: center;
+}
 .thumbnail-card:hover .thumbnail-actions {
   @apply opacity-100;
 }

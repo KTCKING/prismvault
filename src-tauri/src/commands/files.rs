@@ -4,6 +4,7 @@ use crate::engine::thumbs::{
     job_key, preview_job_key, Priority, ThumbJob, ThumbKind, ThumbProgress, ThumbWorker, THUMB_SIZE,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::sync::Arc;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -267,64 +268,135 @@ pub fn enqueue_missing_thumbnails(
     n
 }
 
-/// 取一张图的缩略图路径。
-///
-/// 这里**只判断文件存不存在**，需要生成时把任务丢给后台线程后立刻返回
-/// `pending`。以前这个命令会同步整解码原图，而且全程握着图库锁 —— 滚动大图库
-/// 时每张卡片都在等一次全图解码，整个引擎串行排队，这就是卡顿的根源。
-#[tauri::command]
-pub async fn get_thumbnail_path(
-    library_id: String,
-    file_path: String,
-    state: State<'_, AppState>,
-) -> Result<ThumbnailResult, String> {
-    let key = job_key(&library_id, &file_path);
+/// 批量缩略图查询结果里的一项。
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ThumbBatchItem {
+    pub path: String,
+    /// `ready` / `fallback` / `pending`，语义同 [`ThumbnailResult`]。
+    pub status: String,
+    /// `ready` / `fallback` 时的图片地址。
+    pub thumb: String,
+    /// 已缓存的模糊占位图（32px data URL）；没有则为空串。
+    pub placeholder: String,
+}
 
-    // 已经出过结果的直接回答，连数据库都不用查。
-    if let Some(resolved) = state.thumbs.lookup(&key) {
-        return Ok(match resolved {
-            Some(thumb) => ThumbnailResult { status: "ready".into(), path: thumb },
-            None => ThumbnailResult { status: "fallback".into(), path: file_path },
-        });
+/// 批量取一组图片的缩略图状态。
+///
+/// 为什么要有批量版本：以前每张卡片一次 `invoke`，快速下滑时几百个请求同时
+/// 涌进来，每个都要**取一次引擎锁 + 图库锁 + 查一次 SQLite**——锁被串行化，
+/// 队列前进得比用户滚动还慢。现在整屏打包成一次调用：一次锁、一次遍历。
+///
+/// `window` 是可选的「视口窗口」声明：传了就表示 `paths` 就是用户此刻在看的
+/// 东西，后台队列会把窗口外那些还没做完的任务降级回整库队列（见
+/// [`ThumbWorker::enqueue_window`]）；整库兜底重扫不传，因为它跟"用户在看哪一屏"
+/// 无关，若当成窗口会把当前视口里正在排队的任务错误地降级掉。
+#[tauri::command]
+pub async fn get_thumbnails(
+    library_id: String,
+    paths: Vec<String>,
+    window: Option<Vec<String>>,
+    state: State<'_, AppState>,
+) -> Result<Vec<ThumbBatchItem>, String> {
+    if paths.is_empty() {
+        return Ok(Vec::new());
     }
 
-    let job = {
+    let mut out: Vec<ThumbBatchItem> = Vec::with_capacity(paths.len());
+    let mut jobs: Vec<ThumbJob> = Vec::new();
+    // 库里查不到的路径（刚被挪走 / 删掉的），最后统一按 pending 回，免得前端
+    // 把它当成「这张生成不出来」而退回原图。
+    let mut unknown: Vec<String> = Vec::new();
+    let declared: Option<HashSet<String>> = window.map(|w| {
+        w.into_iter().map(|p| job_key(&library_id, &p)).collect()
+    });
+
+    {
         let engine = state.engine.lock().map_err(|_| "引擎锁失效".to_string())?;
         let lib = engine.get_library(&library_id).ok_or("未找到图库")?;
         let lib = lib.lock().map_err(|_| "图库锁失效".to_string())?;
 
-        let entry = lib
-            .db
-            .get_file_by_path(&file_path)
-            .map_err(|e| e.to_string())?
-            .ok_or("未找到文件")?;
+        for file_path in &paths {
+            let key = job_key(&library_id, file_path);
 
-        // 索引阶段没有算过内容哈希，退化成「路径哈希」—— 与后台任务保持一致。
-        let hash = entry
-            .blake3_hash
-            .filter(|h| !h.is_empty())
-            .unwrap_or_else(|| crate::utils::hash::blake3_hash_bytes(file_path.as_bytes()));
+            // ① 内存里已有结论的，直接回答，连数据库都不用碰。
+            if let Some(resolved) = state.thumbs.lookup(&key) {
+                out.push(match resolved {
+                    Some(thumb) => ThumbBatchItem {
+                        path: file_path.clone(),
+                        status: "ready".into(),
+                        thumb,
+                        placeholder: String::new(),
+                    },
+                    None => ThumbBatchItem {
+                        path: file_path.clone(),
+                        status: "fallback".into(),
+                        thumb: file_path.clone(),
+                        placeholder: String::new(),
+                    },
+                });
+                continue;
+            }
 
-        let thumb_path = lib.thumbnail.thumbnail_path(&hash, THUMB_SIZE);
-        if thumb_path.exists() {
-            let thumb = thumb_path.to_string_lossy().to_string();
-            state.thumbs.remember(&key, thumb.clone());
-            return Ok(ThumbnailResult { status: "ready".into(), path: thumb });
+            let Some(entry) = lib.db.get_file_by_path(file_path).map_err(|e| e.to_string())? else {
+                unknown.push(file_path.clone());
+                continue;
+            };
+
+            // 索引阶段没有算过内容哈希，退化成「路径哈希」—— 与后台任务保持一致。
+            let hash = entry
+                .blake3_hash
+                .filter(|h| !h.is_empty())
+                .unwrap_or_else(|| crate::utils::hash::blake3_hash_bytes(file_path.as_bytes()));
+
+            let thumb_path = lib.thumbnail.thumbnail_path(&hash, THUMB_SIZE);
+            if thumb_path.exists() {
+                let thumb = thumb_path.to_string_lossy().to_string();
+                state.thumbs.remember(&key, thumb.clone());
+                out.push(ThumbBatchItem {
+                    path: file_path.clone(),
+                    status: "ready".into(),
+                    thumb,
+                    placeholder: String::new(),
+                });
+                continue;
+            }
+
+            // ② 真图还没生成：顺手把**已经缓存**的模糊占位图带上（纯磁盘读，
+            //    约 0.5 KB），卡片立刻有东西可显示，不必等解码。
+            out.push(ThumbBatchItem {
+                path: file_path.clone(),
+                status: "pending".into(),
+                thumb: String::new(),
+                placeholder: lib.thumbnail.read_placeholder(&hash).unwrap_or_default(),
+            });
+
+            jobs.push(ThumbJob {
+                key,
+                path: file_path.clone(),
+                source: std::path::PathBuf::from(file_path),
+                hash,
+                engine: lib.thumbnail.clone(),
+                kind: ThumbKind::Grid,
+            });
         }
+    } // 锁在这里释放，解码过程绝不持锁
 
-        ThumbJob {
-            key,
-            path: file_path.clone(),
-            source: std::path::PathBuf::from(&file_path),
-            hash,
-            engine: lib.thumbnail.clone(),
-            kind: ThumbKind::Grid,
-        }
-    }; // 锁在这里释放，解码过程绝不持锁
+    // 即使没有新任务也要调用：窗口外的过期 urgent 任务需要被降级回整库队列。
+    match declared {
+        Some(win) => state.thumbs.enqueue_window(jobs, &win),
+        None => state.thumbs.enqueue_with(jobs, Priority::Urgent),
+    }
 
-    // 屏幕上看得到的图插队，不必等整库补齐的批处理跑完。
-    state.thumbs.enqueue_with(vec![job], Priority::Urgent);
-    Ok(ThumbnailResult { status: "pending".into(), path: String::new() })
+    for file_path in unknown {
+        out.push(ThumbBatchItem {
+            path: file_path,
+            status: "pending".into(),
+            thumb: String::new(),
+            placeholder: String::new(),
+        });
+    }
+
+    Ok(out)
 }
 
 /// 取一张图的**右侧预览图**路径（1600px）。

@@ -5,12 +5,15 @@ import { toDisplaySrc } from "@/lib/thumbs";
 interface Props {
   file: FileInfo;
   thumbnailUrl?: string;
+  /** 32px 的模糊占位图（LQIP）。真图就绪前铺在卡片上，避免大片空白。 */
+  placeholderUrl?: string;
   isSelected: boolean;
   size: number;
   onSelect: (multi: boolean) => void;
   onRatingChange: (rating: number) => void;
   onOpen: () => void;
-  onVisible: () => void;
+  /** 进出视口时通知父组件（父组件据此维护「当前视口窗口」）。 */
+  onVisibleChange?: (inView: boolean) => void;
   onDoubleClick: () => void;
   /** 图片加载失败时的兜底（父组件会换 data URL）。返回 true 表示已换新地址。 */
   onImgError?: (src: string) => Promise<boolean>;
@@ -41,6 +44,13 @@ export function ThumbnailCard(props: Props) {
 
   const [imgSrc, setImgSrc] = createSignal<string | null>(null);
 
+  /**
+   * 模糊占位图。32px 的小图铺满整格再叠一层 blur，看起来就是"这张图已经有了、
+   * 正在变清晰"，而不是一片空白 —— 这是体感提升最大的一步：真图还要等几百
+   * 毫秒甚至几秒，但用户从第一帧起就"看见了"。
+   */
+  const placeholderSrc = () => (props.placeholderUrl ? toDisplaySrc(props.placeholderUrl) : undefined);
+
   createEffect(() => {
     setImgSrc(preferredSrc());
     setImgError(false);
@@ -49,19 +59,16 @@ export function ThumbnailCard(props: Props) {
   });
 
   onMount(() => {
-    // Load the thumbnail lazily once the card scrolls into view. Previously
-    // only the first 30 cards ever requested one, so everything further down
-    // fell back to decoding the full-size original image.
+    // 只观察、不请求：进出视口的信号交给父组件，由它攒够一屏后**批量**提交
+    // （并告诉后端这就是当前视口窗口）。以前每张卡片各自 invoke 一次，快速
+    // 下滑时几百个请求同时抢后端那把引擎锁，越滑越慢。
     if (typeof IntersectionObserver === "undefined") {
-      props.onVisible();
+      props.onVisibleChange?.(true);
       return;
     }
     const io = new IntersectionObserver(
       (entries) => {
-        if (entries.some((e) => e.isIntersecting)) {
-          props.onVisible();
-          io.disconnect();
-        }
+        for (const e of entries) props.onVisibleChange?.(e.isIntersecting);
       },
       { rootMargin: "400px" },
     );
@@ -110,16 +117,24 @@ export function ThumbnailCard(props: Props) {
       onMouseLeave={() => setShowRating(false)}>
 
       <div class="relative overflow-hidden" style={{ background: "var(--bg-tertiary)", height: `${props.size}px` }}>
+        {/* 模糊占位图在最底层：真图（下面那个 opacity 0→1 的 img）盖在它上面淡入。 */}
+        <Show when={placeholderSrc()}>
+          {(src) => (
+            <img src={src()} alt="" aria-hidden="true"
+              class="absolute inset-0 w-full h-full object-cover lqip"
+              draggable={false} decoding="async" />
+          )}
+        </Show>
         <Show when={imgSrc()}>
           {(src) => (
             <img src={src()} alt={props.file.filename}
-              class="w-full h-full object-cover transition-opacity duration-200"
+              class="w-full h-full object-cover transition-opacity duration-200 relative"
               classList={{ "opacity-0": !imgLoaded(), "opacity-100": imgLoaded() }}
               draggable={false} decoding="async"
               onLoad={() => setImgLoaded(true)} onError={handleImgError} />
           )}
         </Show>
-        <Show when={!imgLoaded() && !imgError()}>
+        <Show when={!imgLoaded() && !imgError() && !placeholderSrc()}>
           <div class="absolute inset-0 skeleton" />
         </Show>
         <Show when={imgError()}>

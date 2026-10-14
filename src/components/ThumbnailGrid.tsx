@@ -6,8 +6,10 @@ import { useLibraryStore } from "@/stores/library";
 import { useTheme } from "@/stores/theme";
 import { ThumbnailCard } from "./ThumbnailCard";
 import { api } from "@/lib/tauri-api";
-import type { ThumbReadyItem, ThumbProgress } from "@/lib/tauri-api";
-import { thumbUrl, setThumbUrl, clearThumbUrls, toDisplaySrc } from "@/lib/thumbs";
+import type { ThumbReadyItem, ThumbProgress, ThumbPlaceholderItem } from "@/lib/tauri-api";
+import {
+  thumbUrl, setThumbUrl, placeholderUrl, setPlaceholderUrl, clearThumbUrls, toDisplaySrc,
+} from "@/lib/thumbs";
 import { activeLibraryId } from "@/stores/library";
 import { listen } from "@tauri-apps/api/event";
 import { startDrag } from "@crabnebula/tauri-plugin-drag";
@@ -22,6 +24,17 @@ const EDGE_ZONE = 48;
 /** Max auto-scroll speed (px per frame). */
 const SCROLL_SPEED = 22;
 
+/**
+ * 滚动去抖：视口变化后静默这么久才提交请求。
+ *
+ * 关键在于「静默」而不是「节流」—— 每来一个视口变化就重置计时器，所以只要还在
+ * 滑，就一个请求都不发。以前是卡片一进预取边距就各自 invoke，快速下滑时几百个
+ * 请求挤在同一个后端锁上，滑动越快、每张图等得越久。
+ */
+const FLUSH_DEBOUNCE_MS = 120;
+/** 兜底重扫时每批提交多少条（队列跑空后用来补漏掉的事件）。 */
+const RESYNC_CHUNK = 200;
+
 /** 日志里只留路径尾部，避免整条路径刷屏。 */
 const trail = (p: string, n = 42): string => (p.length > n ? `…${p.slice(-n)}` : p);
 
@@ -33,11 +46,29 @@ export function ThumbnailGrid() {
   const theme = useTheme();
 
   let containerRef!: HTMLDivElement;
-  /** 已经发过缩略图请求的文件，避免同一张图重复 invoke。 */
-  const requestedThumbs = new Set<string>();
-  /** 诊断用：前若干个请求的结果会写进后端日志，方便定位「为什么不出图」。 */
-  let loggedRequests = 0;
-  const LOG_REQUESTS = 25;
+  /**
+   * 当前在视口内（含 400px 预取边距）的卡片路径。
+   *
+   * 这个集合就是提交给后端的「视口窗口」—— 后端会据此把窗口外那些还没做完的
+   * 排队任务降级回整库队列。没有它，快速下滑会把滑过去的每一屏都堆在队列前面，
+   * 用户真正盯着的一屏反而排最后。
+   */
+  const visiblePaths = new Set<string>();
+  /**
+   * 当前列表里实际存在的路径。
+   *
+   * 用来剔除窗口里的「残留」——切视图模式、搜索过滤、分页替换都会让一批卡片
+   * 卸载，但卸载不会回调告诉我们。不清理的话这些旧路径会一直挂在窗口定义里，
+   * 每次提交都要为它们白查一次数据库。
+   */
+  const livePaths = new Set<string>();
+  /** 去抖计时器。 */
+  let flushTimer = 0;
+  /** 组件已销毁后不再提交（去抖回调可能晚于卸载）。 */
+  let disposed = false;
+  /** 诊断用：前若干个窗口提交会写进后端日志，方便定位「为什么不出图」。 */
+  let loggedWindows = 0;
+  const LOG_WINDOWS = 12;
 
   // ── Marquee (drag) selection state ─────────────
   const [marquee, setMarquee] = createSignal<MarqueeRect | null>(null);
@@ -174,33 +205,121 @@ export function ThumbnailGrid() {
     endCardDrag();
   };
 
+  /** 卡片进出视口 → 维护窗口，并安排一次去抖提交。 */
+  const onCardVisibility = (path: string, inView: boolean) => {
+    if (inView) visiblePaths.add(path);
+    else visiblePaths.delete(path);
+    scheduleFlush();
+  };
+
   /**
-   * 请求一张图的缩略图。后端只做「文件在不在」的判断：命中就立刻返回路径，
-   * 未命中则把解码任务丢进后台队列并返回 `pending`，结果稍后由
-   * `thumb-ready` 事件推回来。这里刻意**不回退原图** —— 那会让每张卡片都去
-   * 解码几千像素的原片，几张还好，几百张一起就是几百 MB 内存和长时间卡顿。
+   * 列表视图的行没有用 ThumbnailCard，单独挂观察器维护窗口。
+   * 全表共用同一个 observer —— 列表一次可能渲染上百行，一行一个太浪费。
    */
-  const loadThumbnail = async (filePath: string) => {
+  let listIO: IntersectionObserver | undefined;
+  const observeListRow = (el: HTMLDivElement | undefined) => {
+    if (!el) return;
+    if (!listIO) {
+      listIO = new IntersectionObserver(
+        (entries) => {
+          for (const e of entries) {
+            const p = (e.target as HTMLElement).dataset.path;
+            if (p) onCardVisibility(p, e.isIntersecting);
+          }
+        },
+        { rootMargin: "400px" },
+      );
+    }
+    listIO.observe(el);
+  };
+
+  /**
+   * 安排一次窗口提交。
+   *
+   * 每来一个视口变化就**重置**计时器（去抖，不是节流）—— 只要还在滑，就一个
+   * 请求都不发；停稳 120ms 后把整屏一次性提交。
+   */
+  const scheduleFlush = () => {
+    if (disposed) return;
+    if (flushTimer) window.clearTimeout(flushTimer);
+    flushTimer = window.setTimeout(() => {
+      flushTimer = 0;
+      void flushWindow();
+    }, FLUSH_DEBOUNCE_MS);
+  };
+
+  /**
+   * 提交当前视口窗口。
+   *
+   * `window` 参数同时承担两个职责：告诉后端「要这几张图的地址」，以及「这就是
+   * 用户此刻在看的东西」—— 后端据此把窗口外那些还没做完的排队任务降级回整库
+   * 队列。所以**已经拿到图的路径也要带上**：它们必须出现在窗口定义里，否则那些
+   * 还在排队的邻居会被误判成「已经滑过去」而降级。
+   *
+   * 这里刻意**不回退原图**：一张 4000×3000 的原片解码要占 50 MB，整屏几十张
+   * 一起解就是几百 MB 加肉眼可见的卡顿。后台几秒内就会推送结果，等一等远比解
+   * 原图划算；而且现在有 32px 模糊占位图垫着，等待期间也不是一片空白。
+   */
+  const flushWindow = async () => {
     const libId = activeLibraryId();
-    if (!libId || requestedThumbs.has(filePath)) return;
-    requestedThumbs.add(filePath);
+    if (!libId || disposed) return;
+
+    // 顺手剔除已经不在列表里的残留（过滤 / 搜索 / 换页都会产生）。
+    const win: string[] = [];
+    for (const p of visiblePaths) {
+      if (livePaths.has(p)) win.push(p);
+      else visiblePaths.delete(p);
+    }
+    if (win.length === 0) return;
+
     try {
-      const res = await api.getThumbnailPath(libId, filePath);
-      if (loggedRequests < LOG_REQUESTS) {
-        loggedRequests += 1;
-        void api.diagLog("thumb", `${res.status} ${trail(filePath)} -> ${trail(res.path || "-")}`);
+      const items = await api.getThumbnails(libId, win, win);
+      if (loggedWindows < LOG_WINDOWS) {
+        loggedWindows += 1;
+        const pending = items.filter((i) => i.status === "pending").length;
+        const withPh = items.filter((i) => i.placeholder).length;
+        void api.diagLog(
+          "window",
+          `${items.length} 张 · 命中 ${items.length - pending} · 待生成 ${pending} · 带占位 ${withPh}`,
+        );
       }
-      if (res.status === "ready") {
-        setThumbUrl(filePath, res.path);
-      } else if (res.status === "fallback") {
-        // 生成不出来（RAW / PSD 等），交给 WebView 直接解原图。
-        setThumbUrl(filePath, filePath);
+      for (const it of items) {
+        if (it.placeholder) setPlaceholderUrl(it.path, it.placeholder);
+        if (it.status === "ready") setThumbUrl(it.path, it.thumb);
+        else if (it.status === "fallback") setThumbUrl(it.path, it.path);
+        // pending：什么都不做，等后台的 thumb-placeholder / thumb-ready 推回来。
       }
-      // pending：什么都不做，等后台任务推送。
     } catch (err) {
-      // 查询失败：允许下次可见时重试，但保持骨架屏而不是去解原图。
-      requestedThumbs.delete(filePath);
-      void api.diagLog("thumb", `ERROR ${String(err)} ${trail(filePath)}`);
+      void api.diagLog("window", `ERROR ${String(err)} ${trail(win[0] ?? "")}`);
+    }
+  };
+
+  /**
+   * 兜底重扫：后台队列跑空后，把仍然没有结果的图重新问一遍。
+   *
+   * 用来补上「请求发出去时事件订阅还没生效」「渲染恰好错过一帧」这类竞态 ——
+   * 后端有内存结果表，重问是零成本命中，不会再解一次码。
+   *
+   * 注意这里**不传窗口**：整库重扫跟「用户在看哪一屏」无关，若当成窗口提交，
+   * 会把当前视口里正在排队的任务错误地降级掉。
+   */
+  const resyncMissing = async (missing: string[]) => {
+    const libId = activeLibraryId();
+    if (!libId) return;
+    for (let i = 0; i < missing.length; i += RESYNC_CHUNK) {
+      if (disposed) return;
+      try {
+        const items = await api.getThumbnails(libId, missing.slice(i, i + RESYNC_CHUNK));
+        for (const it of items) {
+          if (it.placeholder) setPlaceholderUrl(it.path, it.placeholder);
+          if (it.status === "ready") setThumbUrl(it.path, it.thumb);
+          else if (it.status === "fallback") setThumbUrl(it.path, it.path);
+        }
+      } catch (err) {
+        void api.diagLog("resync", `ERROR ${String(err)}`);
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 0));
     }
   };
 
@@ -239,6 +358,8 @@ export function ThumbnailGrid() {
     // 后台缩略图任务完成一批就推送一次结果。
     let unlisten: (() => void) | undefined;
     let unlistenProgress: (() => void) | undefined;
+    let unlistenPlaceholder: (() => void) | undefined;
+
     listen<ThumbReadyItem[]>("thumb-ready", (event) => {
       const payload = event.payload;
       if (!payload?.length) return;
@@ -249,6 +370,18 @@ export function ThumbnailGrid() {
       .then((fn) => { unlisten = fn; })
       .catch((err) => console.error("订阅缩略图事件失败:", err));
 
+    // 32px 模糊占位图 —— 比真图早得多到达（只读文件头取 EXIF 内嵌图）。有了它，
+    // 卡片从"一片空白"变成"模糊的轮廓"，真图随后淡入覆盖。
+    listen<ThumbPlaceholderItem[]>("thumb-placeholder", (event) => {
+      const payload = event.payload;
+      if (!payload?.length) return;
+      for (const item of payload) {
+        setPlaceholderUrl(item.path, item.data);
+      }
+    })
+      .then((fn) => { unlistenPlaceholder = fn; })
+      .catch(() => { /* 忽略 */ });
+
     // 兜底：后台队列跑空后，把仍然没有结果的图重新问一遍。这能补上「卡片在
     // 事件订阅生效之前就发了请求」这类竞态 —— 此时结果已经缓存在后端，重新
     // 查询会立刻从内存返回 ready / fallback，不会再解一次码。
@@ -256,25 +389,30 @@ export function ThumbnailGrid() {
       if (event.payload?.running) return;
       const missing = files.files().filter((f) => !thumbUrl(f.path)).map((f) => f.path);
       if (missing.length === 0) return;
-      for (const p of missing) requestedThumbs.delete(p);
-      void (async () => {
-        const CHUNK = 48;
-        for (let i = 0; i < missing.length; i += CHUNK) {
-          await Promise.all(missing.slice(i, i + CHUNK).map((p) => loadThumbnail(p)));
-          if (i + CHUNK < missing.length) await new Promise((r) => setTimeout(r, 0));
-        }
-      })();
+      void resyncMissing(missing);
     })
       .then((fn) => { unlistenProgress = fn; })
       .catch(() => { /* 忽略 */ });
 
-    onCleanup(() => { unlisten?.(); unlistenProgress?.(); });
+    onCleanup(() => {
+      disposed = true;
+      if (flushTimer) window.clearTimeout(flushTimer);
+      unlisten?.();
+      unlistenProgress?.();
+      unlistenPlaceholder?.();
+    });
   });
 
-  // 切换图库时清空缓存，让新库的图片重新走一遍请求。
+  // 切换图库时清空缓存与窗口，让新库的图片重新走一遍请求。
   createEffect(on(activeLibraryId, () => {
-    requestedThumbs.clear();
+    visiblePaths.clear();
     clearThumbUrls();
+  }));
+
+  // 列表内容变了（分页追加 / 过滤 / 搜索）就刷新「现存路径」表。
+  createEffect(on(files.files, (list) => {
+    livePaths.clear();
+    for (const f of list) livePaths.add(f.path);
   }));
 
   const handleScroll = () => {
@@ -438,11 +576,19 @@ export function ThumbnailGrid() {
       drag = null;
       endCardDrag();
       detachPointerListeners();
+      listIO?.disconnect();
     });
   });
 
   const size = () => ui.thumbnailSize();
   const mode = () => ui.viewMode();
+
+  // 切换视图模式（网格/瀑布流/列表）会让整批卡片卸载重建：旧模式下记下的可见
+  // 路径必须清掉，否则它们会一直挂在窗口定义里，把真正可见的那批挤出去。
+  createEffect(on(mode, () => {
+    visiblePaths.clear();
+    scheduleFlush();
+  }));
 
   /** Show the context menu for one or more files (right-click). */
   const openFileContextMenu = (e: MouseEvent, path: string) => {
@@ -590,12 +736,13 @@ export function ThumbnailGrid() {
               <For each={files.files()}>
                 {(file, index) => (
                   <ThumbnailCard file={file} thumbnailUrl={thumbUrl(file.path)}
+                    placeholderUrl={placeholderUrl(file.path)}
                     isSelected={files.selectedFiles().has(file.path)} size={size()}
                     onSelect={(multi) => files.toggleSelect(file.path, multi)}
                     onRatingChange={(r) => files.updateRating(file.path, r)}
                     onOpen={() => { ui.setInfoPanelFile(file.path); ui.setInfoPanelOpen(true); }}
                     onDoubleClick={() => viewer.open(files.files(), index())}
-                    onVisible={() => loadThumbnail(file.path)}
+                    onVisibleChange={(inView) => onCardVisibility(file.path, inView)}
                     onImgError={(src) => handleImgError(file.path, src)}
                     onContextMenu={openFileContextMenu} />
                 )}
@@ -613,12 +760,13 @@ export function ThumbnailGrid() {
                 {(file, index) => (
                   <div style={{ "break-inside": "avoid", "margin-bottom": "8px" }}>
                     <ThumbnailCard file={file} thumbnailUrl={thumbUrl(file.path)}
+                      placeholderUrl={placeholderUrl(file.path)}
                       isSelected={files.selectedFiles().has(file.path)} size={size()}
                       onSelect={(multi) => files.toggleSelect(file.path, multi)}
                       onRatingChange={(r) => files.updateRating(file.path, r)}
                       onOpen={() => { ui.setInfoPanelFile(file.path); ui.setInfoPanelOpen(true); }}
                       onDoubleClick={() => viewer.open(files.files(), index())}
-                      onVisible={() => loadThumbnail(file.path)}
+                      onVisibleChange={(inView) => onCardVisibility(file.path, inView)}
                       onImgError={(src) => handleImgError(file.path, src)}
                       onContextMenu={openFileContextMenu} />
                   </div>
@@ -633,6 +781,7 @@ export function ThumbnailGrid() {
               <For each={files.files()}>
                 {(file, index) => (
                   <div
+                    ref={(el) => observeListRow(el)}
                     class="flex items-center gap-3 px-3 py-2 rounded cursor-pointer transition-colors"
                     data-path={file.path}
                     style={{ background: files.selectedFiles().has(file.path) ? "var(--accent-bg)" : "transparent" }}
@@ -640,12 +789,23 @@ export function ThumbnailGrid() {
                     onContextMenu={(e) => openFileContextMenu(e, file.path)}
                     onDblClick={() => viewer.open(files.files(), index())}
                   >
-                    <div ref={() => loadThumbnail(file.path)} class="w-10 h-10 flex-shrink-0 rounded overflow-hidden" style={{ background: "var(--bg-tertiary)" }}>
-                      <Show when={thumbUrl(file.path)} fallback={<div class="w-full h-full skeleton" />}>
+                    <div class="relative w-10 h-10 flex-shrink-0 rounded overflow-hidden" style={{ background: "var(--bg-tertiary)" }}>
+                      <Show when={placeholderUrl(file.path)}>
+                        {(ph) => (
+                          <img src={toDisplaySrc(ph())} alt="" aria-hidden="true"
+                            class="absolute inset-0 w-full h-full object-cover lqip"
+                            draggable={false} decoding="async" />
+                        )}
+                      </Show>
+                      <Show when={thumbUrl(file.path)} fallback={
+                        <Show when={!placeholderUrl(file.path)}>
+                          <div class="w-full h-full skeleton" />
+                        </Show>
+                      }>
                         {(url) => (
                           <img
                             src={toDisplaySrc(url())}
-                            alt={file.filename} class="w-full h-full object-cover" draggable={false}
+                            alt={file.filename} class="relative w-full h-full object-cover" draggable={false}
                             decoding="async"
                             onError={async (e) => {
                               const el = e.currentTarget as HTMLImageElement;
