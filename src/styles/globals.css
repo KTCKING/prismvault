@@ -172,14 +172,12 @@
   background: var(--accent-bg);
 }
 
-/* 模糊占位图（LQIP）：32px 的小图被 object-cover 拉满整格，本身已经很糊，
-   再叠一层 blur 让色块过渡自然；轻微放大是为了把模糊产生的半透明边缘推出
-   可视区，否则四边会有一圈变淡的框。 */
-.lqip {
-  filter: blur(10px);
-  transform: scale(1.08);
-  transform-origin: center;
-}
+/* 占位图（LQIP）原来在这里有一条 `.lqip { filter: blur(10px); transform: scale(1.08) }`，
+   现已删除。原因：32px 的小图被 object-cover 拉满整格，本身已经糊到看不出像素块，
+   再叠一层 10px 高斯模糊只是给每张卡片白烧一次 CPU —— 几百张卡片同时挂载时，
+   在软件渲染（GPU 被降级）下滚动会明显掉帧。而 transform: scale(1.08) 的唯一
+   用途是遮住模糊产生的半透明边缘，没有模糊就不需要它，去掉反而少一个要重新
+   光栅化的合成层。占位图现在就是「原样放大 + 真图淡入覆盖」。 */
 .thumbnail-card:hover .thumbnail-actions {
   @apply opacity-100;
 }

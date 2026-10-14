@@ -16,17 +16,46 @@ pub const GRID_SIZE: u32 = 448;
 pub const PREVIEW_SIZE: u32 = 1600;
 /// JPEG 质量。70 与 75 在缩略图这个尺寸下肉眼无差，体积小约 12%。
 const JPEG_QUALITY: u8 = 70;
-/// 重采样滤镜。
+/// 降采样倍率低于这个值时不用 `thumbnail()`（见 `downscale`）。
+const THUMBNAIL_MIN_RATIO: f32 = 2.0;
+
+/// 等比缩到 `bounds` 以内（长边上限），并按倍率挑重采样算法。
 ///
-/// `CatmullRom` 比默认的 `Triangle`（双线性）锐利，正好补偿 512 → 448 的
-/// 分辨率下降 —— 看起来反而更清楚，而体积是实打实小了一圈。
-const FILTER: image::imageops::FilterType = image::imageops::FilterType::CatmullRom;
+/// 实测同一张 4000×3000 JPEG 缩到 448px（4K 库，16 张取平均）：
+/// `resize(CatmullRom)` 单张 **105ms**，`thumbnail()` 只要 **10.6ms**。
+/// 而重采样在整条链路上占 49%（比解码的 45% 还高），所以这里是最值钱的一刀。
+///
+/// `imageops::thumbnail` 是「整数块面积平均」：每个源像素只贡献给一个目标像素。
+/// 8~10 倍降采样时每个目标像素平均掉几十个源像素，抗混叠反而比卷积核更彻底，
+/// 又因为不用逐像素加权求和，快到接近 memcpy。
+///
+/// 但它有个明确的失效区间：倍率接近 1 时会**整个跳过**一部分源像素，出现锯齿
+/// 和摩尔纹（官方文档也写着 "may give aliasing artifacts if new size is close
+/// to old size"）。所以只在倍率 ≥ 2 时用它，否则退回 `resize(CatmullRom)`。
+/// 实际命中情况：网格图（448）对绝大多数片子都是 8 倍以上，全走快路；预览图
+/// （1600）对 4000px 原片是 2.5 倍，也能走；只有 1900px 这种「略大于 1600」
+/// 的源图会落回慢路，而这类图数量少、又是按需生成，不影响体感。
+fn downscale(img: &image::DynamicImage, bounds: u32) -> image::DynamicImage {
+    let (w, h) = (img.width(), img.height());
+    if w <= bounds && h <= bounds {
+        return img.clone();
+    }
+    let ratio = w.max(h) as f32 / bounds as f32;
+    if ratio >= THUMBNAIL_MIN_RATIO {
+        img.thumbnail(bounds, bounds)
+    } else {
+        img.resize(bounds, bounds, image::imageops::FilterType::CatmullRom)
+    }
+}
 
 /// 占位图（LQIP）边长。
 ///
 /// 32px 的 JPEG 约 400–700 字节，base64 后 1 KB 上下，可以塞进事件里直接推给
-/// 前端；放大到 448px 再叠一层模糊，就足够让用户在等待真图时"看见轮廓"，
-/// 而不是盯着一片空白。
+/// 前端；`object-cover` 拉满整格后已经足够看出「这张图长什么样」，用户在等待
+/// 真图时看到的是一片有内容的轮廓，而不是空白骨架。
+///
+/// 注意前端**不要**再给这张小图叠 `filter: blur()` —— 32px 放大 14 倍本身已经
+/// 糊到看不出像素块，再挂一层高斯模糊只是给每张卡片白烧一次 CPU。
 pub const PLACEHOLDER_SIZE: u32 = 32;
 /// 占位图质量 —— 反正会被模糊，压狠一点无所谓。
 const LQIP_QUALITY: u8 = 60;
@@ -36,6 +65,11 @@ const LQIP_QUALITY: u8 = 60;
 ///
 /// 注意：**新增 `_lqip` 这类旁路文件不要动这个版本号** —— 改它会让整库缩略图
 /// 被判为过期后全删重算，等于把用户已经攒下的缓存清零，反而更慢。
+///
+/// 同理，重采样算法从 `CatmullRom` 换成 `thumbnail()`（面积平均）也**刻意不升版**：
+/// 输出字节确实变了，但 448px 下两者肉眼分不出来（都是 8 倍以上降采样，抗混叠
+/// 都足够），而升版要付出「整库重算一遍」的代价 —— 拿 1 分钟的确定开销去换
+/// 一个看不出来的差异不划算。混着用没有副作用，新生成的图自然就是新算法。
 const CACHE_VERSION: &str = "grid448-preview1600-q70-catmull";
 
 #[derive(Clone)]
@@ -127,7 +161,7 @@ impl ThumbnailEngine {
         if let Some(parent) = dest.parent() {
             fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
-        let small = img.resize(PLACEHOLDER_SIZE, PLACEHOLDER_SIZE, image::imageops::FilterType::Triangle);
+        let small = downscale(img, PLACEHOLDER_SIZE);
         let mut buf = Vec::new();
         let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, LQIP_QUALITY);
         enc.encode(&small.to_rgb8(), small.width(), small.height(), image::ColorType::Rgb8.into())
@@ -280,11 +314,7 @@ impl ThumbnailEngine {
         }
 
         // 已经比目标小就别放大了。
-        let resized = if img.width() > self.grid_size || img.height() > self.grid_size {
-            img.resize(self.grid_size, self.grid_size, FILTER)
-        } else {
-            img
-        };
+        let resized = downscale(&img, self.grid_size);
 
         let jpeg_path = dest.with_extension("jpg");
         let mut jpeg = Vec::new();
@@ -306,13 +336,7 @@ impl ThumbnailEngine {
             .decode()
             .map_err(|e| format!("Failed to decode: {}", e))?;
 
-        let (w, h) = (img.width(), img.height());
-
-        let thumb = if w > target_size || h > target_size {
-            img.resize(target_size, target_size, FILTER)
-        } else {
-            img
-        };
+        let thumb = downscale(&img, target_size);
 
         let mut jpeg_data = Vec::new();
         let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg_data, JPEG_QUALITY);

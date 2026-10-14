@@ -125,7 +125,7 @@ export function ThumbnailCard(props: Props) {
         <Show when={placeholderSrc()}>
           {(src) => (
             <img src={src()} alt="" aria-hidden="true"
-              class="absolute inset-0 w-full h-full object-cover lqip"
+              class="absolute inset-0 w-full h-full object-cover"
               draggable={false} decoding="async" />
           )}
         </Show>

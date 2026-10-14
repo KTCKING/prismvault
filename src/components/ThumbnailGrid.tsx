@@ -906,7 +906,7 @@ export function ThumbnailGrid() {
                             <Show when={placeholderUrl(file.path)}>
                               {(ph) => (
                                 <img src={toDisplaySrc(ph())} alt="" aria-hidden="true"
-                                  class="absolute inset-0 w-full h-full object-cover lqip"
+                                  class="absolute inset-0 w-full h-full object-cover"
                                   draggable={false} decoding="async" />
                               )}
                             </Show>

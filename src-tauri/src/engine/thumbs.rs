@@ -171,6 +171,13 @@ impl ThumbWorker {
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(threads)
             .thread_name(|i| format!("prismvault-thumb-{i}"))
+            // 解码线程在进程优先级的基础上再降一档，保证进程内部也是
+            // 「界面 / 事件循环 > 解码」。用 `start_handler` 而不是
+            // `spawn_handler`：不接管线程创建，线程名、栈大小仍归 rayon 管，
+            // 少一处可能出错的地方。
+            .start_handler(|_| {
+                crate::utils::priority::lower_current_thread();
+            })
             .build()
             .unwrap_or_else(|_| rayon::ThreadPoolBuilder::new().build().unwrap());
 
