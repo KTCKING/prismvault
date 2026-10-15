@@ -335,6 +335,40 @@ Gatekeeper 隔离属性所致：
 xattr -dr com.apple.quarantine /Applications/PrismVault.app
 ```
 
+## 一个 Esc 为什么关了三样东西
+
+双击图片进预览、按 Esc 想退出预览，结果右侧信息栏（连同搜索框）也一起关了。
+
+原因是 `App` 和 `ImageViewer` 都往 `window` 上挂了 `keydown` 监听器，而 `App` 那边的
+守卫是「预览开着就直接跳过」：
+
+```ts
+if (viewer.viewerOpen()) return;   // ← 读到的是已经被改过的状态
+```
+
+`ImageViewer` 是子组件，`onMount` 早于父组件，所以它先收到事件、先把自己关掉
+（`viewerOpen` 变 `false`）；等 `App` 的监听器执行时守卫已经不成立，于是继续往下走，
+把 `setInfoPanelOpen(false)` 和 `setShowSearch(false)` 也一并做了。一次按键，两处状态。
+
+修法不是加 `stopPropagation()`（同为目标 `window` 的两个监听器互相拦不住，只有
+`stopImmediatePropagation` 能拦，而且得依赖注册顺序）——改成在**捕获阶段**先把状态
+拍成快照。捕获阶段的监听器一定早于所有冒泡监听器，与注册顺序无关：
+
+```ts
+let overlayWasOpen = false;
+window.addEventListener("keydown", () => {
+  overlayWasOpen = viewer.viewerOpen() || ui.contextMenu() !== null || ui.dialog() !== null;
+}, true);
+// 后面所有判断都用快照，而不是现读 viewerOpen()
+```
+
+顺手把同一类问题一起收了：**Esc 只关最上面那一层**。预览、右键菜单、确认弹窗都算浮层，
+只要事件开始时它们开着，`App` 这层就不动背景状态 —— 否则在缩略图上右键、按 Esc 想收起
+菜单，会顺手把选中项清空；而弹窗里按 Esc 也会先把背景的选中状态抹掉。
+
+同一次事件里，剩下的键本来就没受影响：`Delete` / `F5` 的守卫看到的仍是「浮层开着」，
+是对的 —— 只有 Esc 会因为浮层自身改变了状态而穿帮。
+
 ## 性能设计：为什么大图库滚动不再卡
 
 导入 2400 张照片时卡顿的根因有两个，都在缩略图这条链路上：

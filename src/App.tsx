@@ -103,9 +103,22 @@ export default function App() {
     library.setIsRestoring(false);
     clearTimeout(watchdog);
 
+    // window 上的 keydown 会有多个监听器（这里 + ImageViewer + ContextMenu）。同一次按键
+    // 里预览器先处理 Esc 并把自己关掉，等这里执行时 `viewer.viewerOpen()` 已经是 false ——
+    // 结果按一次 Esc 会「关预览 + 连带关掉右侧信息栏和搜索框」，用户得按两次。
+    // 捕获阶段的监听器一定早于所有冒泡监听器（与注册顺序无关），用它把「事件开始派发时」
+    // 的状态拍下来：只要当时有浮层开着（预览 / 右键菜单 / 确认弹窗），这次按键就归浮层，
+    // App 这一层不碰背景状态（否则剪贴板菜单按下 Esc 会顺手清掉选中项）。
+    let overlayWasOpen = false;
+    const snapshotOverlayState = () => {
+      overlayWasOpen =
+        viewer.viewerOpen() || ui.contextMenu() !== null || ui.dialog() !== null;
+    };
+    window.addEventListener("keydown", snapshotOverlayState, true);
+
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Don't handle app shortcuts when viewer is open (viewer handles its own keys)
-      if (viewer.viewerOpen()) return;
+      // Don't handle app shortcuts when an overlay is open (it handles its own keys)
+      if (overlayWasOpen) return;
       if (e.ctrlKey && e.key === "f") {
         e.preventDefault();
         ui.setShowSearch(true);
@@ -149,6 +162,7 @@ export default function App() {
     });
 
     onCleanup(() => {
+      window.removeEventListener("keydown", snapshotOverlayState, true);
       window.removeEventListener("keydown", handleKeyDown);
       unlisten();
     });
