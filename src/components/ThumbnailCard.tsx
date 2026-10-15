@@ -1,6 +1,7 @@
 import { createSignal, createEffect, Show, onMount, onCleanup } from "solid-js";
 import type { FileInfo } from "@/lib/tauri-api";
 import { toDisplaySrc } from "@/lib/thumbs";
+import { IconImage, IconStarFilled } from "@/components/icons";
 
 interface Props {
   file: FileInfo;
@@ -143,7 +144,9 @@ export function ThumbnailCard(props: Props) {
         </Show>
         <Show when={imgError()}>
           <div class="absolute inset-0 flex items-center justify-center" style={{ background: "var(--bg-tertiary)" }}>
-            <span class="text-2xl" style={{ color: "var(--text-muted)" }}>🖼️</span>
+            <span style={{ color: "var(--text-muted)" }}>
+              <IconImage size={26} />
+            </span>
           </div>
         </Show>
 
@@ -155,10 +158,10 @@ export function ThumbnailCard(props: Props) {
         <Show when={showRating() || props.file.rating}>
           <div class="thumbnail-actions">
             {[1, 2, 3, 4, 5].map((star) => (
-              <button class="text-xs transition-colors"
+              <button class="flex items-center transition-colors"
                 style={{ color: (props.file.rating || 0) >= star ? "var(--star-color)" : "rgba(255,255,255,0.5)" }}
                 onClick={(e) => { e.stopPropagation(); props.onRatingChange((props.file.rating || 0) >= star ? 0 : star); }}>
-                ★
+                <IconStarFilled size={11} />
               </button>
             ))}
           </div>

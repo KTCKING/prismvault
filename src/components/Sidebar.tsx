@@ -1,10 +1,26 @@
 import { For, Show, createSignal, onCleanup, createEffect } from "solid-js";
+import type { JSX } from "solid-js";
 import { useLibraryStore, warmForLibrary } from "@/stores/library";
 import { useFilesStore } from "@/stores/files";
 import { useTagsStore } from "@/stores/tags";
 import { useUIStore, type SidebarTab } from "@/stores/ui";
 import { CircleProgress } from "./CircleProgress";
 import { open } from "@tauri-apps/plugin-dialog";
+import {
+  IconArrowLeft,
+  IconCheck,
+  IconClose,
+  IconGlobe,
+  IconMonitor,
+  IconNavFolder,
+  IconNavSearch,
+  IconNavTag,
+  IconNavZap,
+  IconPlus,
+  IconTrash,
+  IconTrashX,
+  IconUndo,
+} from "@/components/icons";
 
 export function Sidebar() {
   const library = useLibraryStore();
@@ -15,11 +31,11 @@ export function Sidebar() {
   // Trash drop state is driven by the pointer-based drag in ThumbnailGrid.
   const trashActive = () => ui.trashHover();
 
-  const tabs: { id: SidebarTab; label: string; icon: string }[] = [
-    { id: "folders", label: "文件夹", icon: "📁" },
-    { id: "tags", label: "标签", icon: "🏷️" },
-    { id: "smart-folders", label: "智能", icon: "⚡" },
-    { id: "search", label: "搜索", icon: "🔍" },
+  const tabs: { id: SidebarTab; label: string; icon: JSX.Element }[] = [
+    { id: "folders", label: "文件夹", icon: <IconNavFolder size={16} /> },
+    { id: "tags", label: "标签", icon: <IconNavTag size={16} /> },
+    { id: "smart-folders", label: "智能", icon: <IconNavZap size={16} /> },
+    { id: "search", label: "搜索", icon: <IconNavSearch size={16} /> },
   ];
 
   // Custom drag state
@@ -117,8 +133,8 @@ export function Sidebar() {
   };
 
   return (
-    <aside class="w-56 flex-shrink-0 flex flex-col"
-      style={{ background: s.bg, borderRight: `1px solid ${s.border}` }}
+    <aside class="app-sidebar w-56 flex-shrink-0 flex flex-col"
+      style={{ background: "var(--bg-secondary)" }}
       onContextMenu={(e) => {
         // Right-click on empty sidebar space (not on a library or the trash
         // entry) opens the "new / open library" menu.
@@ -167,7 +183,7 @@ export function Sidebar() {
           }}
           title="垃圾篓：把图片拖到此处删除"
         >
-          <span class="text-xs">🗑</span>
+          <span class="flex" style={{ color: s.muted }}><IconTrash size={14} /></span>
           <span class="truncate">{trashActive() ? "松开以移入垃圾篓" : "垃圾篓"}</span>
         </div>
       </div>
@@ -177,8 +193,12 @@ export function Sidebar() {
         <Show when={ui.showTrash()}>
           <div class="sidebar-section" onContextMenu={(e) => e.stopPropagation()}>
             <div class="flex items-center justify-between mb-2">
-              <span class="text-2xs font-semibold uppercase tracking-wider" style={{ color: s.muted }}>🗑 垃圾篓</span>
-              <button class="text-xs" style={{ color: s.muted }} onClick={closeTrash} title="返回">←</button>
+              <span class="text-2xs font-semibold uppercase tracking-wider flex items-center gap-1.5" style={{ color: s.muted }}>
+                <IconTrash size={12} />垃圾篓
+              </span>
+              <button class="flex p-0.5" style={{ color: s.muted }} onClick={closeTrash} title="返回">
+                <IconArrowLeft size={14} />
+              </button>
             </div>
             <Show when={files.deletedFiles().length > 0}>
               <button
@@ -216,17 +236,17 @@ export function Sidebar() {
                     >
                       <span class="truncate text-xs flex-1" style={{ color: s.text }} title={f.path}>{f.filename}</span>
                       <button
-                        class="text-xs px-1 rounded hover:bg-green-500/20 transition-colors"
+                        class="flex p-0.5 rounded hover:bg-green-500/20 transition-colors"
                         style={{ color: s.accent }}
                         title="恢复"
                         onClick={async () => { await files.restoreFile(f.path); await files.loadFiles(0); }}
-                      >↩</button>
+                      ><IconUndo size={13} /></button>
                       <button
-                        class="text-xs px-1 rounded hover:bg-red-500/20 transition-colors"
+                        class="flex p-0.5 rounded hover:bg-red-500/20 transition-colors"
                         style={{ color: s.muted }}
                         title="彻底删除"
                         onClick={async () => { await files.purgeFile(f.path); }}
-                      >✕</button>
+                      ><IconTrashX size={13} /></button>
                     </div>
                   )}
                 </For>
@@ -248,7 +268,9 @@ export function Sidebar() {
                       await files.loadFiles(0);
                     }}>清除筛选</button>
                 </Show>
-                <button class="text-xs" style={{ color: s.muted }} onClick={() => setShowNewTag(!showNewTag())}>+</button>
+                <button class="flex p-0.5" style={{ color: s.muted }} onClick={() => setShowNewTag(!showNewTag())} title="新建标签">
+                  <IconPlus size={14} />
+                </button>
               </div>
             </div>
 
@@ -257,7 +279,9 @@ export function Sidebar() {
                 <input class="input flex-1 text-xs py-1" placeholder="新建标签..." value={newTagName()}
                   onInput={(e) => setNewTagName(e.currentTarget.value)}
                   onKeyDown={(e) => e.key === "Enter" && handleCreateTag()} />
-                <button class="btn-primary text-xs px-2" onClick={handleCreateTag}>✓</button>
+                <button class="btn-primary text-xs px-2 flex items-center" onClick={handleCreateTag} title="创建">
+                  <IconCheck size={14} />
+                </button>
               </div>
             </Show>
 
@@ -320,7 +344,9 @@ export function Sidebar() {
                       files.loadFiles(0); 
                     }
                   }}>
-                  <span class="text-xs">{lib.is_network ? "🌐" : "💻"}</span>
+                  <span class="flex" style={{ color: s.muted }}>
+                    {lib.is_network ? <IconGlobe size={14} /> : <IconMonitor size={14} />}
+                  </span>
                   <span class="truncate">{lib.name}</span>
 
                   {/* 缩略图预热进度：圆环 + 已处理数量。整库补完就自动收起。 */}
@@ -341,7 +367,7 @@ export function Sidebar() {
                     {lib.file_count > 0 ? lib.file_count.toLocaleString() : ""}
                   </span>
                   <button
-                    class="ml-1 px-1 text-xs rounded hover:bg-red-500/20 transition-colors"
+                    class="flex ml-1 px-1 rounded hover:bg-red-500/20 transition-colors"
                     style={{ color: "var(--text-muted)" }}
                     onClick={async (e) => {
                       e.stopPropagation();
@@ -349,7 +375,7 @@ export function Sidebar() {
                       files.loadFiles(0);
                     }}
                     title="移除库"
-                  >✕</button>
+                  ><IconClose size={13} /></button>
                 </div>
               )}
             </For>

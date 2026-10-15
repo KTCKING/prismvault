@@ -37,8 +37,8 @@ export function DialogHost() {
             onContextMenu={(e) => e.preventDefault()}
           >
             <div
-              class="rounded-xl p-5 shadow-2xl animate-scale-in"
-              style={{ background: "var(--bg-secondary)", border: "1px solid var(--border-color)", width: "360px" }}
+              class="glass-modal rounded-xl p-5 animate-scale-in"
+              style={{ width: "360px" }}
               onClick={(e) => e.stopPropagation()}
             >
               <Show when={s().title}>

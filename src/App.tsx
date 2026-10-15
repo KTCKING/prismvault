@@ -10,6 +10,20 @@ import { StatusBar } from "@/components/StatusBar";
 import { WelcomeScreen } from "@/components/WelcomeScreen";
 import { InfoPanel } from "@/components/InfoPanel";
 import { SearchBar } from "@/components/SearchBar";
+import {
+  IconChevronLeft,
+  IconChevronRight,
+  IconFolder,
+  IconGlobe,
+  IconLoader,
+  IconMonitor,
+  IconMoon,
+  IconPanelRight,
+  IconSettings,
+  IconSun,
+  StatusDot,
+} from "@/components/icons";
+import { HeroLogo } from "@/components/icons/hero";
 import { ImageViewer } from "@/components/ImageViewer";
 import { IndexingDialog } from "@/components/IndexingDialog";
 import { SettingsModal } from "@/components/SettingsModal";
@@ -144,15 +158,11 @@ export default function App() {
   const borderColor = "var(--border-color)";
 
   return (
-    <div class="flex flex-col h-full" style={{ background: "var(--bg-primary)", color: "var(--text-primary)" }}>
+    <div class="flex flex-col h-full" style={{ background: "var(--bg-primary)", "background-image": "var(--canvas-glow)", color: "var(--text-primary)" }}>
       {/* Title Bar */}
       <header class="app-header flex items-center gap-3 px-4 py-2">
         <div class="flex items-center gap-2">
-          <svg class="w-6 h-6" style={{ color: "var(--accent)" }} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M12 2L2 7l10 5 10-5-10-5z" />
-            <path d="M2 17l10 5 10-5" />
-            <path d="M2 12l10 5 10-5" />
-          </svg>
+          <HeroLogo size={22} style={{ color: "var(--text-primary)" }} />
           <span class="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>PrismVault</span>
         </div>
 
@@ -161,11 +171,8 @@ export default function App() {
             {library.activeLibrary()?.name}
           </span>
           <Show when={library.nasStatus()}>
-            <span class="text-xs ml-2">
-              {library.nasStatus()?.status === "local" && "💻"}
-              {library.nasStatus()?.status === "online" && "🟢"}
-              {library.nasStatus()?.status === "degraded" && "🟡"}
-              {library.nasStatus()?.status === "offline" && "🔴"}
+            <span class="text-xs ml-2 flex items-center">
+              <StatusDot tone={library.nasStatus()!.status} />
             </span>
           </Show>
         </Show>
@@ -176,36 +183,36 @@ export default function App() {
 
         {/* Theme Toggle */}
         <button
-          class="btn-ghost text-xs px-2"
+          class="btn-ghost text-xs px-2 flex"
           onClick={theme.toggle}
           title={theme.theme() === "light" ? "切换到深色模式" : "切换到浅色模式"}
         >
-          {theme.theme() === "light" ? "🌙" : "☀️"}
+          {theme.theme() === "light" ? <IconMoon size={15} /> : <IconSun size={15} />}
         </button>
 
         <button
-          class="btn-ghost text-xs"
+          class="btn-ghost text-xs flex"
           onClick={() => ui.setSidebarOpen(!ui.sidebarOpen())}
           title={ui.sidebarOpen() ? "隐藏侧边栏" : "显示侧边栏"}
         >
-          {ui.sidebarOpen() ? "◀" : "▶"}
+          {ui.sidebarOpen() ? <IconChevronLeft size={15} /> : <IconChevronRight size={15} />}
         </button>
 
         <button
-          class="btn-ghost text-xs px-2"
+          class="btn-ghost text-xs px-2 flex"
           style={{ color: ui.infoPanelOpen() ? "var(--accent)" : "var(--text-muted)" }}
           onClick={toggleInfoPanel}
           title={ui.infoPanelOpen() ? "隐藏信息面板" : "显示信息面板"}
         >
-          ▥
+          <IconPanelRight size={15} />
         </button>
 
         <button
-          class="btn-ghost text-xs px-2"
+          class="btn-ghost text-xs px-2 flex"
           onClick={() => ui.setShowSettings(true)}
           title="设置"
         >
-          ⚙
+          <IconSettings size={15} />
         </button>
       </header>
 
@@ -216,7 +223,9 @@ export default function App() {
         <Show when={!library.isRestoring()} fallback={
           <div class="flex-1 flex items-center justify-center" style={{ background: "var(--bg-primary)" }}>
             <div class="text-center">
-              <div class="text-3xl mb-3">⏳</div>
+              <div class="mb-3 flex justify-center" style={{ color: "var(--text-muted)" }}>
+                <IconLoader size={30} class="animate-spin" />
+              </div>
               <p class="text-sm" style={{ color: "var(--text-muted)" }}>正在加载...</p>
             </div>
           </div>
@@ -250,7 +259,9 @@ export default function App() {
       <Show when={dragOver()}>
         <div class="drop-zone">
           <div class="text-center">
-            <div class="text-4xl mb-3">📁</div>
+            <div class="mb-3 flex justify-center" style={{ color: "var(--text-primary)" }}>
+              <IconFolder size={44} />
+            </div>
             <p class="text-lg font-medium" style={{ color: "var(--text-primary)" }}>拖放文件夹以打开图片库</p>
             <p class="text-sm mt-1" style={{ color: "var(--text-muted)" }}>支持本地文件夹和网络路径 (SMB)</p>
           </div>
@@ -285,8 +296,8 @@ export default function App() {
 
       {/* Library picker dialog (multiple libraries available) */}
       <Show when={library.showLibraryPicker()}>
-        <div class="fixed inset-0 z-40 flex items-center justify-center" style={{ background: "rgba(0,0,0,0.5)" }}>
-          <div class="rounded-xl p-6 w-96 shadow-2xl animate-scale-in" style={{ background: "var(--bg-secondary)", border: "1px solid var(--border-color)" }}>
+        <div class="modal-overlay fixed inset-0 z-40 flex items-center justify-center">
+          <div class="glass-modal rounded-xl p-6 w-96 animate-scale-in">
             <h2 class="text-lg font-semibold mb-4 text-center" style={{ color: "var(--text-primary)" }}>选择要打开的库</h2>
             <div class="flex flex-col gap-2 mb-4 max-h-60 overflow-y-auto">
               {library.restoredLibraries().map((lib) => (
@@ -301,8 +312,10 @@ export default function App() {
                   }}
                 >
                   <div class="text-sm font-medium truncate">{lib.name}</div>
-                  <div class="text-2xs mt-0.5 truncate" style={{ color: "var(--text-muted)" }}>
-                    {lib.is_network ? "🌐 " : "💻 "}{lib.root_path} · {lib.file_count} 个文件
+                  <div class="text-2xs mt-0.5 truncate flex items-center gap-1" style={{ color: "var(--text-muted)" }}>
+                    {lib.is_network ? <IconGlobe size={11} /> : <IconMonitor size={11} />}
+                    <span class="truncate">{lib.root_path}</span>
+                    <span>· {lib.file_count} 个文件</span>
                   </div>
                 </button>
               ))}

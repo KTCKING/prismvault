@@ -1,14 +1,27 @@
 import { Show, For, onMount, onCleanup, createSignal, createEffect } from "solid-js";
+import type { JSX } from "solid-js";
 import { useUIStore } from "@/stores/ui";
 import { useFilesStore } from "@/stores/files";
 import { useLibraryStore } from "@/stores/library";
 import { useTagsStore } from "@/stores/tags";
 import { api } from "@/lib/tauri-api";
 import { open } from "@tauri-apps/plugin-dialog";
+import {
+  IconCopy,
+  IconFolder,
+  IconFolderOpen,
+  IconImage,
+  IconLogOut,
+  IconPencil,
+  IconPlus,
+  IconTrash,
+  IconTrashX,
+  IconUndo,
+} from "@/components/icons";
 
 interface MenuItem {
   label: string;
-  icon?: string;
+  icon?: JSX.Element;
   danger?: boolean;
   divider?: boolean;
   disabled?: boolean;
@@ -79,7 +92,7 @@ export function ContextMenu() {
       const items: MenuItem[] = [
         {
           label: single ? "打开图片" : `打开 ${paths.length} 张图片`,
-          icon: "🖼️",
+          icon: <IconImage size={15} />,
           onClick: async () => {
             for (const p of paths) await api.openFile(p);
             close();
@@ -87,7 +100,7 @@ export function ContextMenu() {
         },
         {
           label: "复制",
-          icon: "📋",
+          icon: <IconCopy size={15} />,
           onClick: async () => {
             try {
               await api.copyFilesToClipboard(paths);
@@ -101,7 +114,7 @@ export function ContextMenu() {
         },
         {
           label: "打开所在文件夹",
-          icon: "📁",
+          icon: <IconFolder size={15} />,
           disabled: !single,
           onClick: async () => {
             if (single) await api.openInExplorer(paths[0]);
@@ -111,7 +124,7 @@ export function ContextMenu() {
         { label: "", divider: true, onClick: () => {} },
         {
           label: "移入垃圾篓",
-          icon: "🗑",
+          icon: <IconTrash size={15} />,
           danger: true,
           onClick: () => {
             const n = paths.length;
@@ -140,7 +153,7 @@ export function ContextMenu() {
         return [
           {
             label: "打开垃圾篓",
-            icon: "🗑",
+            icon: <IconTrash size={15} />,
             onClick: async () => {
               ui.setShowTrash(true);
               await files.loadDeletedFiles();
@@ -149,7 +162,7 @@ export function ContextMenu() {
           },
           {
             label: "清空垃圾篓",
-            icon: "⛔",
+            icon: <IconTrashX size={15} />,
             danger: true,
             onClick: async () => {
               close();
@@ -176,7 +189,7 @@ export function ContextMenu() {
       const items: MenuItem[] = [
         {
           label: "恢复",
-          icon: "↩",
+          icon: <IconUndo size={15} />,
           onClick: async () => {
             for (const p of paths) await files.restoreFile(p);
             ui.showToast(paths.length > 1 ? `已恢复 ${paths.length} 张` : "已恢复");
@@ -185,7 +198,7 @@ export function ContextMenu() {
         },
         {
           label: "彻底删除",
-          icon: "⛔",
+          icon: <IconTrashX size={15} />,
           danger: true,
           onClick: async () => {
             for (const p of paths) await files.purgeFile(p);
@@ -251,12 +264,12 @@ export function ContextMenu() {
       return [
         {
           label: "新建库",
-          icon: "➕",
+          icon: <IconPlus size={15} />,
           onClick: createNewLibrary,
         },
         {
           label: "打开已有库",
-          icon: "📂",
+          icon: <IconFolderOpen size={15} />,
           onClick: openExistingLibrary,
         },
       ];
@@ -266,7 +279,7 @@ export function ContextMenu() {
     const items: MenuItem[] = [
       {
         label: "在资源管理器中打开",
-        icon: "📁",
+        icon: <IconFolder size={15} />,
         onClick: async () => {
           const lib = library.libraries().find((l) => l.id === t.libraryId);
           if (lib) await api.openInExplorer(lib.root_path);
@@ -275,7 +288,7 @@ export function ContextMenu() {
       },
       {
         label: "重命名",
-        icon: "✏️",
+        icon: <IconPencil size={15} />,
         onClick: () => {
           const lib = library.libraries().find((l) => l.id === t.libraryId);
           close();
@@ -303,7 +316,7 @@ export function ContextMenu() {
       { label: "", divider: true, onClick: () => {} },
       {
         label: "移除库（保留文件）",
-        icon: "↩",
+        icon: <IconLogOut size={15} />,
         onClick: async () => {
           await api.deleteLibrary(t.libraryId, false);
           library.setLibraries(library.libraries().filter((l) => l.id !== t.libraryId));
@@ -316,7 +329,7 @@ export function ContextMenu() {
       },
       {
         label: "删除库及所有文件",
-        icon: "⛔",
+        icon: <IconTrashX size={15} />,
         danger: true,
         onClick: () => {
           const lib = library.libraries().find((l) => l.id === t.libraryId);
@@ -347,12 +360,10 @@ export function ContextMenu() {
     <Show when={menu()}>
       <div
         id="prismvault-context-menu"
-        class="fixed z-50 min-w-48 rounded-lg py-1 shadow-2xl animate-scale-in"
+        class="context-menu fixed z-50 min-w-48 animate-scale-in"
         style={{
           left: `${position().x}px`,
           top: `${position().y}px`,
-          background: "var(--bg-secondary)",
-          border: "1px solid var(--border-color)",
         }}
         onClick={(e) => e.stopPropagation()}
         onContextMenu={(e) => e.preventDefault()}
@@ -373,7 +384,7 @@ export function ContextMenu() {
                 }}
                 onClick={item.onClick}
               >
-                <span class="w-4 text-center">{item.icon}</span>
+                <span class="w-4 flex justify-center">{item.icon}</span>
                 <span>{item.label}</span>
               </button>
             )

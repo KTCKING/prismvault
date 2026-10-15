@@ -1,10 +1,12 @@
 import { createSignal, onMount, Show } from "solid-js";
+import type { JSX } from "solid-js";
 import { api, type GpuMode, type GpuStatus, type ImportSummary } from "@/lib/tauri-api";
 import { useLibraryStore, warmForLibrary } from "@/stores/library";
 import { useUIStore } from "@/stores/ui";
 import { CircleProgress } from "./CircleProgress";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useTheme } from "@/stores/theme";
+import { IconArrowRight, IconClose, IconEagle, IconPackage } from "@/components/icons";
 
 interface Props {
   onClose: () => void;
@@ -118,12 +120,14 @@ export function SettingsModal(props: Props) {
   return (
     <div class="fixed inset-0 z-50 flex items-center justify-center" style={{ background: "rgba(0,0,0,0.5)" }}>
       <div
-        class="rounded-xl p-6 w-[520px] max-w-[90vw] shadow-2xl animate-scale-in"
-        style={{ background: s.bg, border: `1px solid ${s.border}`, color: s.primary }}
+        class="glass-modal rounded-xl p-6 w-[520px] max-w-[90vw] animate-scale-in"
+        style={{ color: s.primary }}
       >
         <div class="flex items-center justify-between mb-5">
           <h2 class="text-lg font-medium" style={{ color: s.primary }}>设置</h2>
-          <button class="btn-ghost text-sm px-2" onClick={props.onClose} title="关闭">✕</button>
+          <button class="btn-ghost text-sm px-2 flex" onClick={props.onClose} title="关闭">
+            <IconClose size={15} />
+          </button>
         </div>
 
         {/* ── 缩略图 ─────────────────────────────────────────── */}
@@ -220,14 +224,14 @@ export function SettingsModal(props: Props) {
 
         <div class="flex flex-col gap-3">
           <ImportRow
-            icon="🦅"
+            icon={<IconEagle size={20} />}
             title="导入 Eagle 资源库"
             desc="读取 .library 内的 metadata.json，保留文件夹层级（映射为标签）、标签、备注、评分与来源链接"
             busy={busy()}
             onPick={() => pickAndImport("eagle")}
           />
           <ImportRow
-            icon="📦"
+            icon={<IconPackage size={20} />}
             title="导入 Pixcall 资源库"
             desc="读取 .pixcall/database/main.db，保留文件夹层级、标签、描述、评分与来源网址"
             busy={busy()}
@@ -267,7 +271,7 @@ export function SettingsModal(props: Props) {
 }
 
 interface RowProps {
-  icon: string;
+  icon: JSX.Element;
   title: string;
   desc: string;
   busy: boolean;
@@ -284,12 +288,12 @@ function ImportRow(props: RowProps) {
       }}
       onClick={() => !props.busy && props.onPick()}
     >
-      <span class="text-xl leading-none mt-0.5">{props.icon}</span>
+      <span class="mt-0.5" style={{ color: "var(--text-primary)" }}>{props.icon}</span>
       <div class="flex-1 min-w-0">
         <div class="text-sm font-medium" style={{ color: "var(--text-primary)" }}>{props.title}</div>
         <div class="text-xs mt-0.5 leading-relaxed" style={{ color: "var(--text-muted)" }}>{props.desc}</div>
       </div>
-      <span class="text-sm" style={{ color: "var(--accent)" }}>→</span>
+      <span class="flex mt-1" style={{ color: "var(--accent)" }}><IconArrowRight size={15} /></span>
     </div>
   );
 }

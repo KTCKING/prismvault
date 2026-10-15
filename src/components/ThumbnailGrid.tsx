@@ -8,6 +8,15 @@ import { ThumbnailCard } from "./ThumbnailCard";
 import { api } from "@/lib/tauri-api";
 import type { FileInfo, ThumbReadyItem, ThumbProgress, ThumbPlaceholderItem } from "@/lib/tauri-api";
 import {
+  IconArrowDown,
+  IconArrowUp,
+  IconGrid,
+  IconImage,
+  IconMasonry,
+  IconMenu,
+  IconStarFilled,
+} from "@/components/icons";
+import {
   thumbUrl, setThumbUrl, placeholderUrl, setPlaceholderUrl, clearThumbUrls, toDisplaySrc,
 } from "@/lib/thumbs";
 import { activeLibraryId } from "@/stores/library";
@@ -742,7 +751,7 @@ export function ThumbnailGrid() {
           <option value="rating">评分</option>
         </select>
         <button
-          class="btn-ghost text-xs px-2 py-1"
+          class="btn-ghost text-xs px-2 py-1 flex"
           onClick={() => {
             const newOrder = files.currentSort().order === "DESC" ? "ASC" : "DESC";
             files.setCurrentSort({ ...files.currentSort(), order: newOrder });
@@ -750,7 +759,7 @@ export function ThumbnailGrid() {
           }}
           title={files.currentSort().order === "DESC" ? "降序" : "升序"}
         >
-          {files.currentSort().order === "DESC" ? "↓" : "↑"}
+          {files.currentSort().order === "DESC" ? <IconArrowDown size={14} /> : <IconArrowUp size={14} />}
         </button>
 
         {/* Filter by type */}
@@ -785,23 +794,23 @@ export function ThumbnailGrid() {
         {/* View mode toggle */}
         <div class="flex items-center gap-0.5 rounded p-0.5" style={{ background: "var(--bg-tertiary)" }}>
           <button
-            class="px-2 py-1 rounded text-xs transition-colors"
+            class="flex px-2 py-1 rounded transition-colors"
             style={{ background: mode() === "grid" ? s.accent : "transparent", color: mode() === "grid" ? "#fff" : s.muted }}
             onClick={() => ui.setViewMode("grid")}
             title="网格视图"
-          >▦</button>
+          ><IconGrid size={14} /></button>
           <button
-            class="px-2 py-1 rounded text-xs transition-colors"
+            class="flex px-2 py-1 rounded transition-colors"
             style={{ background: mode() === "masonry" ? s.accent : "transparent", color: mode() === "masonry" ? "#fff" : s.muted }}
             onClick={() => ui.setViewMode("masonry")}
             title="瀑布流视图"
-          >▥</button>
+          ><IconMasonry size={14} /></button>
           <button
-            class="px-2 py-1 rounded text-xs transition-colors"
+            class="flex px-2 py-1 rounded transition-colors"
             style={{ background: mode() === "list" ? s.accent : "transparent", color: mode() === "list" ? "#fff" : s.muted }}
             onClick={() => ui.setViewMode("list")}
             title="列表视图"
-          >☰</button>
+          ><IconMenu size={14} /></button>
         </div>
 
         {/* Thumbnail size */}
@@ -822,7 +831,9 @@ export function ThumbnailGrid() {
         <Show when={files.files().length > 0} fallback={
           <div class="flex items-center justify-center h-full" style={{ color: s.muted }}>
             <div class="text-center">
-              <div class="text-4xl mb-3">🖼️</div>
+              <div class="mb-3 flex justify-center opacity-50">
+                <IconImage size={40} />
+              </div>
               <p class="text-sm">暂无图片</p>
             </div>
           </div>
@@ -943,7 +954,11 @@ export function ThumbnailGrid() {
                           </div>
                           <div class="text-xs" style={{ color: s.muted }}>{new Date(file.mtime).toLocaleDateString()}</div>
                           <Show when={file.rating}>
-                            <div class="text-xs" style={{ color: "var(--star-color)" }}>{"★".repeat(file.rating || 0)}</div>
+                            <div class="flex gap-0.5" style={{ color: "var(--star-color)" }}>
+                              {Array.from({ length: file.rating || 0 }, (_, i) => (
+                                <IconStarFilled size={11} />
+                              ))}
+                            </div>
                           </Show>
                         </div>
                       )}

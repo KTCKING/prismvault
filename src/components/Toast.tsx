@@ -1,15 +1,16 @@
-import { For, Show } from "solid-js";
+import { For } from "solid-js";
 import { useUIStore, type ToastType } from "@/stores/ui";
+import { IconCheck, IconClose, IconInfo } from "@/components/icons";
 
-/** Bottom-center transient notifications (copy done, trashed, etc.). */
+/** Bottom-center transient notifications (copy done, trashed, etc). */
 export function ToastHost() {
   const ui = useUIStore();
 
   const palette = (type: ToastType) => {
     switch (type) {
-      case "success": return { bg: "var(--accent)", color: "#fff", icon: "✓" };
-      case "error": return { bg: "var(--danger)", color: "#fff", icon: "✕" };
-      default: return { bg: "var(--bg-tertiary)", color: "var(--text-primary)", icon: "ℹ" };
+      case "success": return { bg: "var(--accent)", color: "#fff", icon: <IconCheck size={14} /> };
+      case "error": return { bg: "var(--danger)", color: "#fff", icon: <IconClose size={14} /> };
+      default: return { bg: "var(--bg-tertiary)", color: "var(--text-primary)", icon: <IconInfo size={14} /> };
     }
   };
 
@@ -26,7 +27,7 @@ export function ToastHost() {
             }}
             onClick={() => ui.dismissToast(t.id)}
           >
-            <span class="text-xs">{palette(t.type).icon}</span>
+            <span class="flex items-center">{palette(t.type).icon}</span>
             <span>{t.message}</span>
           </div>
         )}
