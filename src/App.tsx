@@ -15,8 +15,8 @@ import {
   IconChevronRight,
   IconFolder,
   IconGlobe,
+  IconLibrary,
   IconLoader,
-  IconMonitor,
   IconMoon,
   IconPanelRight,
   IconSettings,
@@ -311,12 +311,17 @@ export default function App() {
                     tags.loadTags();
                   }}
                 >
-                  <div class="text-sm font-medium truncate">{lib.name}</div>
-                  <div class="text-2xs mt-0.5 truncate flex items-center gap-1" style={{ color: "var(--text-muted)" }}>
-                    {lib.is_network ? <IconGlobe size={11} /> : <IconMonitor size={11} />}
-                    <span class="truncate">{lib.root_path}</span>
-                    <span>· {lib.file_count} 个文件</span>
-                  </div>
+                  <span class="flex items-center gap-2.5">
+                    <span class="flex-shrink-0" style={{ color: "var(--text-muted)" }}>
+                      {lib.is_network ? <IconGlobe size={16} /> : <IconLibrary size={16} />}
+                    </span>
+                    <span class="flex-1 min-w-0">
+                      <span class="block text-sm font-medium truncate">{lib.name}</span>
+                      <span class="block text-2xs truncate" style={{ color: "var(--text-muted)" }}>
+                        {lib.root_path} · {lib.file_count} 个文件
+                      </span>
+                    </span>
+                  </span>
                 </button>
               ))}
             </div>

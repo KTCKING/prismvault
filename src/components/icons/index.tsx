@@ -3,9 +3,9 @@ import type { JSX } from "solid-js";
 /**
  * 图标系统。三套风格：
  *
- * - 本文件：A 风格 Fluent 线性（界面小图标）+ B 风格圆角实心（侧栏导航）。
- *   全部 24×24 viewBox、1.5px 圆角描边，`currentColor` 上色 —— 黑白两套主题
- *   自动跟随，不需要为每套主题各存一份。
+ * - 本文件：A 风格 Fluent 线性（界面小图标 + 侧栏导航）。
+ *   全部 24×24 viewBox、1.5px 圆角描边（侧栏导航 1.7px，见 IconTab*），
+ *   `currentColor` 上色 —— 黑白两套主题自动跟随，不需要为每套主题各存一份。
  * - hero.tsx：C 风格灰阶 3D（欢迎页 logo 与空状态），多层不透明度叠高光。
  *
  * 替代原先散落各处的 emoji（86 处 / 31 种）。emoji 的问题：不同系统字形不统一、
@@ -15,6 +15,8 @@ import type { JSX } from "solid-js";
 export interface IconProps {
   /** 像素尺寸，默认 16。 */
   size?: number;
+  /** 描边宽度，默认 1.5。个别图标需要更粗/更细时按需覆盖。 */
+  strokeWidth?: number;
   class?: string;
   style?: JSX.CSSProperties;
 }
@@ -28,7 +30,7 @@ function Svg(props: IconProps & { children: JSX.Element }) {
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
-      stroke-width="1.5"
+      stroke-width={props.strokeWidth ?? 1.5}
       stroke-linecap="round"
       stroke-linejoin="round"
       class={props.class}
@@ -345,56 +347,54 @@ export function IconEagle(p: IconProps) {
   );
 }
 
-/* ── B 风格 · 圆角实心（侧栏导航）───────────────── */
-
-function SvgSolid(props: IconProps & { children: JSX.Element }) {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      width={props.size ?? 16}
-      height={props.size ?? 16}
-      viewBox="0 0 24 24"
-      fill="currentColor"
-      class={props.class}
-      style={props.style}
-      aria-hidden="true"
-    >
-      {props.children}
-    </svg>
-  );
-}
-
-export function IconNavFolder(p: IconProps) {
-  return (
-    <SvgSolid {...p}>
-      <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.1a2 2 0 0 1-1.7-.9l-.8-1.2A2 2 0 0 0 8.7 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
-    </SvgSolid>
-  );
-}
-
-export function IconNavTag(p: IconProps) {
-  return (
-    <SvgSolid {...p}>
-      <path d="M12.6 2.6A2 2 0 0 0 11.2 2H4a2 2 0 0 0-2 2v7.2a2 2 0 0 0 .6 1.4l8.7 8.7a2.4 2.4 0 0 0 3.4 0l6.6-6.6a2.4 2.4 0 0 0 0-3.4Z" />
-      <circle cx="7.2" cy="7.2" r="1.6" fill="var(--bg-primary)" />
-    </SvgSolid>
-  );
-}
-
-export function IconNavZap(p: IconProps) {
-  return (
-    <SvgSolid {...p}>
-      <path d="M13 2 4.5 13.2a.6.6 0 0 0 .5.8H10l-1 8 8.5-11.2a.6.6 0 0 0-.5-.8H12l1-8Z" />
-    </SvgSolid>
-  );
-}
-
-/** 侧栏搜索用粗圆环而不是实心——实心圆点在 16px 下会糊成一坨。 */
-export function IconNavSearch(p: IconProps) {
+/** 资源库（本机目录）：照片堆叠 —— 后一张只露右上两条边，前一张里画山与太阳，
+ *  和桌面图标 / 欢迎页 logo 同一套意象，一眼能认出是"图片库"而不是一台显示器。 */
+export function IconLibrary(p: IconProps) {
   return (
     <Svg {...p}>
-      <circle cx="11" cy="11" r="6.5" stroke-width="2.4" />
-      <path d="m19.5 19.5-4-4" stroke-width="2.4" />
+      <path d="M7.8 2.4h11.4a2 2 0 0 1 2 2v10.4" />
+      <rect x="2.8" y="7.8" width="13.4" height="12.4" rx="2.4" />
+      <circle cx="6.9" cy="12.1" r="1.6" />
+      <path d="m3.6 19.9 3.2-3.4a1.3 1.3 0 0 1 1.9 0l2.6 2.8" />
+    </Svg>
+  );
+}
+
+/* ── 侧栏导航 tab（统一 1.7px 线性）─────────────
+   这排图标原先是「三个实心 + 一个加粗描边」的混搭：实心块和细线条并排时
+   视觉重量差一倍，看起来参差；激活态又靠贴底的 2px 下划线表达，离图标太远。
+   现在四个统一到同一条描边，激活态交给外层容器的"浮起卡片"去表达。 */
+
+export function IconTabFolder(p: IconProps) {
+  return (
+    <Svg {...p} strokeWidth={1.7}>
+      <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.1a2 2 0 0 1-1.7-.9l-.8-1.2A2 2 0 0 0 8.7 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+    </Svg>
+  );
+}
+
+export function IconTabTag(p: IconProps) {
+  return (
+    <Svg {...p} strokeWidth={1.7}>
+      <path d="M12.6 2.6A2 2 0 0 0 11.2 2H4a2 2 0 0 0-2 2v7.2a2 2 0 0 0 .6 1.4l8.7 8.7a2.4 2.4 0 0 0 3.4 0l6.6-6.6a2.4 2.4 0 0 0 0-3.4Z" />
+      <circle cx="7.2" cy="7.2" r="1.5" />
+    </Svg>
+  );
+}
+
+export function IconTabZap(p: IconProps) {
+  return (
+    <Svg {...p} strokeWidth={1.7}>
+      <path d="M13 2 4.5 13.2a.6.6 0 0 0 .5.8H10l-1 8 8.5-11.2a.6.6 0 0 0-.5-.8H12l1-8Z" />
+    </Svg>
+  );
+}
+
+export function IconTabSearch(p: IconProps) {
+  return (
+    <Svg {...p} strokeWidth={1.7}>
+      <circle cx="11" cy="11" r="7" />
+      <path d="m20.5 20.5-4.2-4.2" />
     </Svg>
   );
 }

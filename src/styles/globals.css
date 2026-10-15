@@ -281,11 +281,18 @@
 }
 
 .sidebar-section {
-  @apply px-3 py-2;
+  @apply px-2 py-1.5;
+}
+
+/* 分组标题与 item 内容共用同一条左边线（18px）：item 自带 px-2.5，
+   标题补上同样的内边距。以前是「section px-3 + item px-3」两层叠加，
+   标题在 12px、内容在 24px，看着是两套缩进。 */
+.sidebar-title {
+  @apply px-2.5;
 }
 
 .sidebar-item {
-  @apply flex items-center gap-2 px-3 py-1.5 rounded-md text-sm
+  @apply flex items-center gap-2 px-2.5 py-1.5 rounded-md text-sm
          cursor-pointer transition-colors;
   color: var(--text-secondary);
 }
@@ -296,6 +303,25 @@
 .sidebar-item.active {
   background: var(--accent-bg);
   color: var(--text-primary);
+}
+
+/* 侧栏顶部导航 tab：四等宽胶囊，激活态是「实心强调色 + 反色图标」——
+   和 .btn-primary 同一套语言，比贴底 2px 下划线离图标近、指示也更明确。
+   （浅色主题下 --bg-elevated 是"白叠白"，只有 2 个色阶差，当激活态太虚。） */
+.sidebar-tab {
+  @apply flex-1 flex items-center justify-center rounded-lg transition-colors;
+  height: 32px;
+  color: var(--text-muted);
+}
+.sidebar-tab:hover {
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+}
+.sidebar-tab.active,
+.sidebar-tab.active:hover {
+  background: var(--accent);
+  color: var(--accent-contrast);
+  box-shadow: var(--shadow);
 }
 
 /* ── Virtual Scroll Container ─────────────────── */

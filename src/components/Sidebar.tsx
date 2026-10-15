@@ -11,12 +11,12 @@ import {
   IconCheck,
   IconClose,
   IconGlobe,
-  IconMonitor,
-  IconNavFolder,
-  IconNavSearch,
-  IconNavTag,
-  IconNavZap,
+  IconLibrary,
   IconPlus,
+  IconTabFolder,
+  IconTabSearch,
+  IconTabTag,
+  IconTabZap,
   IconTrash,
   IconTrashX,
   IconUndo,
@@ -32,10 +32,10 @@ export function Sidebar() {
   const trashActive = () => ui.trashHover();
 
   const tabs: { id: SidebarTab; label: string; icon: JSX.Element }[] = [
-    { id: "folders", label: "文件夹", icon: <IconNavFolder size={16} /> },
-    { id: "tags", label: "标签", icon: <IconNavTag size={16} /> },
-    { id: "smart-folders", label: "智能", icon: <IconNavZap size={16} /> },
-    { id: "search", label: "搜索", icon: <IconNavSearch size={16} /> },
+    { id: "folders", label: "文件夹", icon: <IconTabFolder size={18} /> },
+    { id: "tags", label: "标签", icon: <IconTabTag size={18} /> },
+    { id: "smart-folders", label: "智能文件夹", icon: <IconTabZap size={18} /> },
+    { id: "search", label: "搜索筛选", icon: <IconTabSearch size={18} /> },
   ];
 
   // Custom drag state
@@ -146,16 +146,17 @@ export function Sidebar() {
         });
       }}
     >
-      {/* Tab Selector */}
-      <div class="flex border-b" style={{ borderColor: s.border }}>
+      {/* Tab Selector —— Fluent 分段控件：四等宽胶囊，激活态是"实心强调色 + 反色图标"。
+          以前是 flex-1 + 贴底 2px 下划线，指示条离图标隔着十几像素，四个图标又
+          是"三个实心 + 一个描边"的混搭，并排看轻重不一。 */}
+      <div class="flex gap-1 p-1.5" style={{ "border-bottom": `1px solid ${s.border}` }}>
         <For each={tabs}>
           {(tab) => (
             <button
-              class="flex-1 py-2 text-xs font-medium transition-colors"
-              style={{
-                color: ui.sidebarTab() === tab.id ? s.accent : s.muted,
-                borderBottom: ui.sidebarTab() === tab.id ? `2px solid ${s.accent}` : "2px solid transparent",
-              }}
+              class="sidebar-tab"
+              classList={{ active: ui.sidebarTab() === tab.id }}
+              title={tab.label}
+              aria-label={tab.label}
               onClick={() => { ui.setShowTrash(false); ui.setSidebarTab(tab.id); }}
             >
               {tab.icon}
@@ -165,12 +166,12 @@ export function Sidebar() {
       </div>
 
       {/* Trash — always-visible entry inside the sidebar menu area */}
-      <div class="p-2 flex-shrink-0" style={{ borderBottom: `1px solid ${s.border}` }}>
+      <div class="px-2 py-1.5 flex-shrink-0" style={{ "border-bottom": `1px solid ${s.border}` }}>
         <div
           class="sidebar-item"
           classList={{ active: ui.showTrash() }}
           data-trash-drop
-          style={trashActive() ? { background: "var(--accent)", color: "#fff", outline: "2px dashed var(--accent)", outlineOffset: "2px" } : undefined}
+          style={trashActive() ? { background: "var(--accent)", color: "var(--accent-contrast)", outline: "2px dashed var(--accent)", "outline-offset": "2px" } : undefined}
           onClick={openTrash}
           onContextMenu={(e) => {
             e.preventDefault();
@@ -193,7 +194,7 @@ export function Sidebar() {
         <Show when={ui.showTrash()}>
           <div class="sidebar-section" onContextMenu={(e) => e.stopPropagation()}>
             <div class="flex items-center justify-between mb-2">
-              <span class="text-2xs font-semibold uppercase tracking-wider flex items-center gap-1.5" style={{ color: s.muted }}>
+              <span class="sidebar-title text-2xs font-semibold uppercase tracking-wider flex items-center gap-1.5" style={{ color: s.muted }}>
                 <IconTrash size={12} />垃圾篓
               </span>
               <button class="flex p-0.5" style={{ color: s.muted }} onClick={closeTrash} title="返回">
@@ -258,7 +259,7 @@ export function Sidebar() {
         <Show when={ui.sidebarTab() === "tags" && !ui.showTrash()}>
           <div class="sidebar-section">
             <div class="flex items-center justify-between mb-2">
-              <span class="text-2xs font-semibold uppercase tracking-wider" style={{ color: s.muted }}>标签</span>
+              <span class="sidebar-title text-2xs font-semibold uppercase tracking-wider" style={{ color: s.muted }}>标签</span>
               <div class="flex items-center gap-1">
                 <Show when={files.filterTag() !== undefined}>
                   <button class="text-2xs" style={{ color: s.accent }}
@@ -312,7 +313,7 @@ export function Sidebar() {
 
         <Show when={ui.sidebarTab() === "folders" && !ui.showTrash()}>
           <div class="sidebar-section" ref={sidebarRef}>
-            <span class="text-2xs font-semibold uppercase tracking-wider" style={{ color: s.muted }}>库</span>
+            <span class="sidebar-title text-2xs font-semibold uppercase tracking-wider" style={{ color: s.muted }}>库</span>
             <For each={library.libraries()}>
               {(lib, index) => (
                 <div
@@ -344,8 +345,8 @@ export function Sidebar() {
                       files.loadFiles(0); 
                     }
                   }}>
-                  <span class="flex" style={{ color: s.muted }}>
-                    {lib.is_network ? <IconGlobe size={14} /> : <IconMonitor size={14} />}
+                  <span class="flex" style={{ color: library.activeLibraryId() === lib.id ? s.text : s.muted }}>
+                    {lib.is_network ? <IconGlobe size={14} /> : <IconLibrary size={14} />}
                   </span>
                   <span class="truncate">{lib.name}</span>
 
@@ -366,8 +367,10 @@ export function Sidebar() {
                     title={`${lib.file_count} 个文件`}>
                     {lib.file_count > 0 ? lib.file_count.toLocaleString() : ""}
                   </span>
+                  {/* 移除库：平时收起（不占位、不抢视线），鼠标移到这一行才淡入。
+                      用 opacity 而不是 display —— 几何不变，行高和数字列不会跳。 */}
                   <button
-                    class="flex ml-1 px-1 rounded hover:bg-red-500/20 transition-colors"
+                    class="flex ml-1 px-1 rounded opacity-0 group-hover:opacity-100 focus-visible:opacity-100 hover:bg-red-500/20 transition-all"
                     style={{ color: "var(--text-muted)" }}
                     onClick={async (e) => {
                       e.stopPropagation();
@@ -384,17 +387,19 @@ export function Sidebar() {
 
         <Show when={ui.sidebarTab() === "smart-folders" && !ui.showTrash()}>
           <div class="sidebar-section">
-            <span class="text-2xs font-semibold uppercase tracking-wider" style={{ color: s.muted }}>智能文件夹</span>
-            <p class="text-xs mt-2" style={{ color: s.muted }}>智能文件夹会根据规则自动收集符合条件的文件。</p>
-            <button class="btn-secondary text-xs mt-2 w-full">+ 创建智能文件夹</button>
+            <span class="sidebar-title text-2xs font-semibold uppercase tracking-wider" style={{ color: s.muted }}>智能文件夹</span>
+            <p class="text-xs mt-2 px-2.5 leading-relaxed" style={{ color: s.muted }}>智能文件夹会根据规则自动收集符合条件的文件。</p>
+            <button class="btn btn-secondary text-xs mt-2 w-full">
+              <IconPlus size={13} />创建智能文件夹
+            </button>
           </div>
         </Show>
 
         <Show when={ui.sidebarTab() === "search" && !ui.showTrash()}>
           <div class="sidebar-section">
-            <span class="text-2xs font-semibold uppercase tracking-wider" style={{ color: s.muted }}>筛选</span>
+            <span class="sidebar-title text-2xs font-semibold uppercase tracking-wider" style={{ color: s.muted }}>筛选</span>
             <div class="mt-2 space-y-2">
-              <label class="text-xs" style={{ color: s.muted }}>文件类型</label>
+              <label class="text-xs px-2.5 block" style={{ color: s.muted }}>文件类型</label>
               <select class="input text-xs" value={files.filterExt() || ""}
                 onChange={(e) => { files.setFilterExt(e.currentTarget.value || undefined); files.loadFiles(0); }}>
                 <option value="">全部类型</option>
@@ -411,15 +416,17 @@ export function Sidebar() {
         </Show>
       </div>
 
-      <div class="p-2" style={{ borderTop: `1px solid ${s.border}` }}>
-        <button class="btn-secondary text-xs w-full" onClick={async () => {
+      <div class="p-2" style={{ "border-top": `1px solid ${s.border}` }}>
+        <button class="btn btn-secondary text-xs w-full" onClick={async () => {
           const selected = await open({ directory: true, multiple: false, title: "选择文件夹作为图片库" });
           if (selected && typeof selected === "string") {
             await library.openLibrary(selected);
             await files.loadFiles(0);
             await tags.loadTags();
           }
-        }}>+ 打开库</button>
+        }}>
+          <IconPlus size={13} />打开库
+        </button>
       </div>
     </aside>
   );
