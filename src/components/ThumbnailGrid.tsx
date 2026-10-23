@@ -391,6 +391,80 @@ export function ThumbnailGrid() {
   }));
 
   /**
+   * 信息面板开 / 关会改变网格宽度 → 列数变化 → 同一张图换了行。
+   *
+   * 点击时它明明在眼前，面板一开网格变窄、列数变少，它就被推到更靠后的行，
+   * 于是滑出可视区 —— 用户感觉"点了就跳走了"，还得自己找回来。
+   *
+   * 列数变化只改行号、不改行高，所以把 scrollTop 平移「行差 × 行高」就能让它
+   * 留在原来的纵向位置（不是"滚到它可见"，而是逐像素不动）。
+   *
+   * 时机选 rAF 而不是微任务：rAF 一定在 DOM 更新之后、本帧绘制之前。此时
+   * `containerRef.clientWidth` 已经是新宽度，而 `virtual()` 里的列数还是旧的
+   * （ResizeObserver 要等本帧的 rAF 回调之后才派发）—— 正好一旧一新可以对比；
+   * 而且用户不会看到"先跳到别处再跳回来"的闪烁。
+   */
+  let anchorPath: string | null = null;
+  let anchorRaf = 0;
+
+  const findCardEl = (root: HTMLElement, path: string): HTMLElement | null => {
+    const esc = typeof CSS !== "undefined" && CSS.escape
+      ? CSS.escape(path)
+      : path.replace(/["\\]/g, "\\$&");
+    return root.querySelector<HTMLElement>(`[data-path="${esc}"]`);
+  };
+
+  const keepFocusedInPlace = () => {
+    const c = containerRef;
+    // 关面板时 onClose 会先把 infoPanelFile 清空，所以退回"最后打开过的那张"
+    const path = ui.infoPanelFile() ?? anchorPath;
+    if (!c || !path) return;
+    anchorPath = path;
+
+    const v = virtual();
+    if (!v) {
+      // 瀑布流没有虚拟化（CSS columns 列高不均算不出行位置）→ 用元素实测位置兜底
+      const el = findCardEl(c, path);
+      if (!el) return;
+      const cr = c.getBoundingClientRect();
+      const er = el.getBoundingClientRect();
+      if (er.top < cr.top) c.scrollTop += er.top - cr.top - GRID_GAP;
+      else if (er.bottom > cr.bottom) c.scrollTop += er.bottom - cr.bottom + GRID_GAP;
+      return;
+    }
+
+    const list = files.files();
+    const index = list.findIndex((f) => f.path === path);
+    if (index < 0) return;
+
+    const card = size();
+    const isList = mode() === "list";
+    const inner = Math.max(card, c.clientWidth - CONTAINER_PAD * 2);
+    const cols = isList ? 1
+      : Math.max(1, Math.floor((inner + GRID_GAP) / (card + GRID_GAP)));
+    if (cols === v.columns) return;   // 宽度变了但列数没变 → 位置本来就不动
+
+    const rowH = isList ? LIST_ROW_H : card + 40 + GRID_GAP;
+    const delta = (Math.floor(index / cols) - Math.floor(index / v.columns)) * rowH;
+    if (!delta) return;
+
+    // 必须先记下旧位置再让新宽度进信号：列数一变，撑起滚动高度的行数也跟着变，
+    // 浏览器可能趁机把 scrollTop 夹一下；用绝对目标值（旧位置 + 行差）算才稳。
+    const from = c.scrollTop;
+    syncViewport();                                        // 宽度进信号 → 列数 / 总高度重建
+    c.scrollTop = Math.max(0, from + delta);               // 此刻上界已是新布局的
+    syncViewport();                                        // 让切片立刻跟上新位置
+  };
+
+  // 记住最后打开过信息面板的那张图（关面板时 infoPanelFile 会被置空）
+  createEffect(on(() => ui.infoPanelFile(), (p) => { if (p) anchorPath = p; }));
+
+  createEffect(on(() => ui.infoPanelOpen(), () => {
+    if (anchorRaf) cancelAnimationFrame(anchorRaf);
+    anchorRaf = requestAnimationFrame(() => { anchorRaf = 0; keepFocusedInPlace(); });
+  }, { defer: true }));
+
+  /**
    * 兜底重扫：后台队列跑空后，把仍然没有结果的图重新问一遍。
    *
    * 用来补上「请求发出去时事件订阅还没生效」「渲染恰好错过一帧」这类竞态 ——
