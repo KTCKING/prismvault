@@ -3,4 +3,3 @@ pub mod files;
 pub mod tags;
 pub mod search;
 pub mod import;
-pub mod bridge;

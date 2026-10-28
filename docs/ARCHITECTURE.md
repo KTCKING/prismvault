@@ -1,6 +1,6 @@
 # PrismVault 架构与功能全清单
 
-> 对应版本 **v0.4.0**。上层是功能清单（用户看到什么），下层是模块地图（代码在哪），
+> 对应版本 **v0.5.0**。上层是功能清单（用户看到什么），下层是模块地图（代码在哪），
 > 中间用一张分层图串起来 —— 改功能前先在这里定位归属。
 
 ---
@@ -9,38 +9,26 @@
 
 ```
 ┌───────────────────────────────────────────────────────────────────┐
-│ ① 浏览器扩展 · Chrome / Edge（MV3，extension/）                    │
-│    content.js      扫描 img / srcset / 懒加载 / 背景图 / video      │
-│                    Shadow DOM 采集面板（多选）+ 悬停速存按钮        │
-│    background.js   用站点 cookie fetch 字节 · 串行上传队列 · 徽标   │
-│    popup/options   连接状态 · 端口令牌 · 采集规则                   │
+│ ① 前端 SolidJS（src/）                                             │
+│    App / Sidebar / ThumbnailGrid / Card / InfoPanel / Viewer       │
+│    ContextMenu / Settings / Dialog / Toast                         │
+│    stores（library files tags ui viewer theme）· tauri-api.ts       │
 └──────────────────────────┬────────────────────────────────────────┘
-                           │ POST /api/ingest（原始字节 + ?name&page）
-                           │ 仅 127.0.0.1，Origin 白名单 + x-prismvault-token
+                           │ Tauri IPC（invoke / event）
 ┌──────────────────────────▼────────────────────────────────────────┐
-│ ② 本地桥接 bridge.rs（手写 HTTP/1.1，零框架）                       │
-│    文件名清洗 → 唯一命名 (2) → 写入当前库 → insert_file → 排缩略图  │
-│    emit bridge-ingested  ────────────────────────────────┐         │
-└──────────────────────────┬───────────────────────────────┼─────────┘
-                           │                               │
-┌──────────────────────────▼───────────────────────────────▼─────────┐
-│ ③ 应用主体（Tauri 2）                                              │
-│  ┌──────────────────────────┐  IPC  ┌───────────────────────────┐  │
-│  │ 前端 SolidJS（src/）      │◀────▶│ Rust 命令层 + engine       │  │
-│  │  App / Sidebar / Grid    │       │  db  indexer  thumbs       │  │
-│  │  Card / InfoPanel /      │       │  thumbnail  import         │  │
-│  │  Viewer / ContextMenu /  │       │  eaglepack  watcher        │  │
-│  │  Settings / Extension    │       │  search  dedup             │  │
-│  │  stores · tauri-api.ts   │       │  gpu  priority  winattr    │  │
-│  └──────────────────────────┘       └───────────────────────────┘  │
-└──────────────────────────┬─────────────────────────────────────────┘
+│ ② Rust 命令层 + engine                                            │
+│    commands  library  files  tags  search  import                  │
+│    engine    db  indexer  thumbs  thumbnail  import  eaglepack     │
+│              watcher  search  dedup                                │
+│    utils     hash  media  path  winattr  priority                  │
+│    gpu.rs    GPU 哨兵 · 软件渲染降级（窗口在此创建）                │
+└──────────────────────────┬────────────────────────────────────────┘
                            │
 ┌──────────────────────────▼─────────────────────────────────────────┐
-│ ④ 存储（每个库自包含，拷走即迁移）                                  │
+│ ③ 存储（每个库自包含，拷走即迁移）                                  │
 │    <库根>/.prism/db.sqlite           schema v3，WAL                 │
 │    <库根>/.prism/thumbnails/         blake3 键：448 / 1600 / LQIP   │
 │    %APPDATA%/PrismVault/libraries.json  库清单与顺序                │
-│    %APPDATA%/PrismVault/bridge.json     扩展端口 / 令牌 / 开关       │
 └────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -48,12 +36,16 @@
 
 | 决策 | 原因 |
 | --- | --- |
-| 扩展只负责「抓」，落盘入库全在 Rust | 浏览器拿得到字节，但拿不到文件系统；职责一刀切最省心 |
-| 让浏览器去 fetch 而不是应用自己下 URL | 防盗链 / `blob:` / canvas / 需登录 —— 应用直连常拿到 302 占位图 |
-| 桥接手写 HTTP/1.1 不引 axum | 只有 3 条路由，引框架要多带约 1.5 MB 依赖 |
 | 元数据放库内 `.prism` | 库可整目录搬走、可放网盘，离线仍能浏览；Windows 上打隐藏属性 |
 | 缩略图不落库表、按 blake3 键存文件 | 换尺寸只加文件不改 schema；`prune_stale` 负责清理 |
 | 视频不入缩略图队列 | 没有解码器，硬排只会每轮开库白试一遍；卡片自己画播放角标 |
+| 网格绝不回退原图 | 12MP 解码 36–50 MB/张，滚两屏就吃光内存；未就绪显骨架屏 |
+| 虚拟化只挂可见 ±2 行 | 10 万张时 DOM 数量与总张数无关 |
+
+> **关于网页摘取**：浏览器扩展与本地桥接服务（`bridge.rs` / `extension/`）在
+> **v0.5.0 已移除** —— 那是综合性素材管理软件（PixVault）才需要的能力，
+> PrismVault 定位为纯本地图库浏览器。`is_video_ext` 这类被共用的工具沉到了
+> `utils/media.rs`，功能不受影响。
 
 ---
 
@@ -109,36 +101,13 @@
 - 复制文件到剪贴板
 - 重复文件查找（blake3）
 
-### 8. 从网页摘取（v0.2.0 新增，v0.3.0 / v0.4.0 增强）
-- 三种入口：整页采集面板（`Alt+S`）、悬停速存按钮、右键「保存到 PrismVault」
-- 自动处理：`srcset` 取最大档、懒加载 `data-src`、CSS 背景图、`<picture>`、
-  指向图片的链接、`blob:`、需登录 / 防盗链
-- 视频与图片可一起勾选，视频带播放角标
-- **采集时就能归档**（v0.3.0）：面板顶部可选文件夹（库里已有的目录 / 新建多级目录 /
-  库根 / 按站点自动）与打标签（逗号分隔，也可点库里已有标签），选择记在本地，
-  下次沿用；标签名不存在时由后端现建（`a/b` 自动补父级）
-- **iframe 内也能采**（v0.3.0）：`all_frames` + 后台「活着的帧」注册表，顶层帧逐帧收集
-  再按 URL 去重；`blob:` 按 frameId 回到产出它的那一帧去读；面板只出现在顶层文档
-- **失败重试**（v0.3.0）：每张最多试 3 次（400/900 ms 退避），4xx 直接判死；
-  失败项留在后台，面板出现「重试」按钮，只能重跑失败的那几张
-- **整页截图**（v0.4.0）：面板「截取整页」/ 页面右键 / `Alt+Shift+S` 三入口；
-  `captureVisibleTab` 逐屏拍（Chrome 限流 2 次/秒 → 每屏等 520ms），
-  后台用 `OffscreenCanvas` + `createImageBitmap` 拼长图（页面里拼会被站点 CSP 的
-  `img-src` 拦 `data:`）。第一屏保留页头、第二屏起藏 `fixed`/`sticky`；截图期间
-  临时关掉 `scroll-behavior:smooth` 与滚动条，结束后恢复原位。
-  上限 16 屏 / 画布单边 16384px（超出等比缩放）；内部滚动容器的 SPA 退化为视口截图
-- **落点规则**：按站点建子文件夹（默认）/ 固定子文件夹 / 面板里手选 / 直接存库根
-- 同名自动 `(2)`；网页来源写进备注；单文件上限 512 MB
-- 设置页「浏览器扩展」面板：开关、端口、令牌（可重新生成）、一键导出扩展、安装指引
-- 存入后主窗口实时刷新并 toast 提示
-
-### 9. 设置与系统
+### 8. 设置与系统
 - 外观：深 / 浅 / 跟随系统
 - 渲染方式：自动 / 硬件加速 / 软件渲染（重启生效，崩溃自动降级并持久化）
 - 缩略图预热开关
 - 导入统计（条目数 / 解包体积 / 按文件夹重组 / 重名改名）
 
-### 10. 交互细节（踩过坑的地方）
+### 9. 交互细节（踩过坑的地方）
 - 开 / 关信息面板时网格列数变化，目标图用 rAF 平移补锚点留在原位
 - Esc 只关最上面一层（捕获阶段快照浮层状态，不靠注册顺序）
 - 侧栏缩进基线 18 px（`px-2` 容器 + `px-2.5` 条目）
@@ -149,7 +118,7 @@
 
 ```
 src/                      前端（SolidJS + Tailwind）
-├── App.tsx               布局 · 全局快捷键 · bridge-ingested 监听
+├── App.tsx               布局 · 全局快捷键 · 拖放入口
 ├── components/
 │   ├── Sidebar.tsx       四个分区 tab + 库右键 + 预热进度环
 │   ├── ThumbnailGrid.tsx 三种布局 + 虚拟化 + 视口窗口提交
@@ -157,15 +126,13 @@ src/                      前端（SolidJS + Tailwind）
 │   ├── ImageViewer.tsx   图片 / 视频预览
 │   ├── InfoPanel.tsx     右侧信息面板
 │   ├── ContextMenu.tsx   文件 / 库 / 分组三类菜单
-│   ├── SettingsModal.tsx 设置（外观 / GPU / 预热 / 导入 / 扩展入口）
-│   └── ExtensionModal.tsx 浏览器扩展面板
+│   └── SettingsModal.tsx 设置（外观 / GPU / 预热 / 导入）
 ├── stores/               files  library  tags  ui  viewer  theme
 └── lib/                  tauri-api.ts（invoke 封装）  thumbs.ts（URL 缓存）
 
 src-tauri/src/
-├── main.rs               窗口创建（GPU 门控在此）· 命令注册（53 个）
+├── main.rs               窗口创建（GPU 门控在此）· 命令注册（46 个）
 ├── lib.rs                AppState · 事件 · 启动时恢复库
-├── bridge.rs             本地 HTTP 服务 + 扩展分发
 ├── gpu.rs                GPU 哨兵 / 模式
 ├── engine/
 │   ├── db.rs             SQLite schema v3 · 分页查询 · 标签
@@ -177,35 +144,13 @@ src-tauri/src/
 │   ├── search.rs         FTS5 + LIKE 兜底
 │   ├── dedup.rs          blake3 重复查找
 │   └── watcher.rs        目录变更监听
-├── commands/             library files tags search import bridge
-└── utils/                priority.rs（降优先级）  winattr.rs（隐藏属性）
-
-extension/                浏览器扩展（编译期 include_str! 进 exe）
+├── commands/             library files tags search import
+└── utils/                hash  media（视频判定）  path  winattr  priority
 ```
 
 ---
 
-## 四、桥接协议（供扩展 / 脚本调用）
-
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| `GET` | `/api/ping` | 连通性 + 版本 + 当前库名 |
-| `GET` | `/api/meta` | 采集面板的「存放」清单：库内子目录（相对库根，≤3 层 / 400 条）+ 已有标签名 |
-| `POST` | `/api/ingest?name=&page=&folder=&tags=` | 请求体为原始字节；`folder` 相对库根、不存在会自动建，`tags` 逗号分隔（`tag=` 重复亦可）；返回 `{ok,path,filename,size,video,folder,tags}` |
-| `OPTIONS` | 任意 | CORS 预检，只对扩展来源回 `Access-Control-Allow-Origin` |
-
-`/api/meta` 里的目录扫描会整枝跳过点开头的目录（含库元数据目录），所以
-`.prism/thumbnails` 里上万条缓存不会被当成「文件夹」列出来。
-
-标签名在做清洗：去 `#`、去空白、截断 40 字、按小写去重、单次最多 12 个；
-库里没有的名字调用 `get_or_create_tag` 现建（`a/b` 会自动补齐父级）。
-
-请求头必带 `x-prismvault-token`（除扩展来源的预检）。错误码：
-`401` 令牌不符 · `403` Origin 不被接受 · `409` 没有打开库 · `413` 超过 512 MB · `500` 落盘失败。
-
----
-
-## 五、数据模型（schema v3）
+## 四、数据模型（schema v3）
 
 ```
 files        id, path(UNIQUE), filename, extension, size_bytes, width, height,
@@ -224,11 +169,12 @@ files_fts    FTS5 镜像（filename / path / notes）
 
 ---
 
-## 六、版本演进
+## 五、版本演进
 
 | 版本 | 主题 |
 | --- | --- |
 | v0.1.0 | 库 + 网格 + 缩略图管线 + 玻璃拟态界面 + GPU 开关 |
 | v0.2.0 | 浏览器扩展摘取 + 视频入库 + `.eaglepack` 导入 + 删库三道闸 |
 | v0.3.0 | 采集面板可选文件夹 / 打标签 · iframe 内采集 · 失败重试 |
-| **v0.4.0** | **整页截图（逐屏拼长图）** |
+| v0.4.0 | 整页截图（逐屏拼长图） |
+| **v0.5.0** | **去掉浏览器扩展与本地桥接，回归纯本地图库** |

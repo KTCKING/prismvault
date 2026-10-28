@@ -31,7 +31,6 @@ import { ContextMenu } from "@/components/ContextMenu";
 import { ToastHost } from "@/components/Toast";
 import { DialogHost } from "@/components/Dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { listen } from "@tauri-apps/api/event";
 import { api } from "@/lib/tauri-api";
 import { useViewerStore } from "@/stores/viewer";
 
@@ -145,16 +144,6 @@ export default function App() {
     // card is dragged back over the window during an OS drag — ignore those.
     const IMAGE_EXT = /\.(jpe?g|png|gif|webp|bmp|tiff?|avif|svg|psd|raw|cr2|nef|arw|dng|heic|ico)$/i;
 
-    // 浏览器扩展存进来一个文件：刷一下列表，让用户当场看到它。
-    const unBridge = await listen<{ filename: string; library_id: string }>(
-      "bridge-ingested",
-      (e) => {
-        if (e.payload.library_id !== library.activeLibraryId()) return;
-        ui.showToast(`已从网页存入 ${e.payload.filename}`, "success");
-        void files.loadFiles(0);
-      },
-    );
-
     const unlisten = await getCurrentWindow().onDragDropEvent((event) => {
       if (event.payload.type === "over") {
         setDragOver(true);
@@ -176,7 +165,6 @@ export default function App() {
       window.removeEventListener("keydown", snapshotOverlayState, true);
       window.removeEventListener("keydown", handleKeyDown);
       unlisten();
-      unBridge();
     });
   });
 

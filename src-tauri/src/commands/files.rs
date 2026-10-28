@@ -260,12 +260,7 @@ pub fn enqueue_missing_thumbnails(
     for (path, hash) in candidates {
         // 视频不排缩略图任务：解码器不认 mp4，硬排只会每轮开库都白试一遍。
         // 网格里视频卡片显示的是播放角标（见 ThumbnailCard）。
-        if crate::bridge::is_video_ext(
-            std::path::Path::new(&path)
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or(""),
-        ) {
+        if crate::utils::media::is_video_path(std::path::Path::new(&path)) {
             continue;
         }
         let hash = hash

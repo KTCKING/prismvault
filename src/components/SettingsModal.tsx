@@ -7,8 +7,7 @@ import { CircleProgress } from "./CircleProgress";
 import { open } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import { useTheme } from "@/stores/theme";
-import { IconArrowRight, IconClose, IconDatabase, IconEagle, IconPackage, IconPuzzle } from "@/components/icons";
-import { ExtensionModal } from "./ExtensionModal";
+import { IconArrowRight, IconClose, IconDatabase, IconEagle, IconPackage } from "@/components/icons";
 
 interface Props {
   onClose: () => void;
@@ -40,8 +39,6 @@ export function SettingsModal(props: Props) {
   /** 选完 .eaglepack 后先给出的统计，等用户确认再解压 */
   const [pendingPack, setPendingPack] = createSignal<{ path: string; probe: PackProbe } | null>(null);
   const [packProgress, setPackProgress] = createSignal<PackProgress | null>(null);
-  /** 浏览器扩展子面板（设置内容已经够长了，单独一层更好读） */
-  const [extOpen, setExtOpen] = createSignal(false);
 
   onMount(async () => {
     try {
@@ -319,18 +316,6 @@ export function SettingsModal(props: Props) {
           <div class="mt-2 text-xs" style={{ color: s.muted }}>改动需要重启应用才生效。</div>
         </div>
 
-        <div class="text-sm mb-3" style={{ color: s.secondary }}>浏览器扩展</div>
-
-        <div class="flex flex-col gap-3 mb-5">
-          <ImportRow
-            icon={<IconPuzzle size={20} />}
-            title="从网页摘取图片和视频"
-            desc="装一个浏览器扩展，把网页上的图片 / 视频一键存进当前图库：面板多选、悬停速存、右键保存都支持"
-            busy={false}
-            onPick={() => setExtOpen(true)}
-          />
-        </div>
-
         <div class="text-sm mb-4" style={{ color: s.secondary }}>从其它素材管理软件导入资源库</div>
         <div class="flex flex-col gap-3">
           <ImportRow
@@ -460,10 +445,6 @@ export function SettingsModal(props: Props) {
         </div>
       </div>
 
-      {/* 扩展面板叠在设置之上：它自己是一层 fixed 遮罩 */}
-      <Show when={extOpen()}>
-        <ExtensionModal onClose={() => setExtOpen(false)} />
-      </Show>
     </div>
   );
 }

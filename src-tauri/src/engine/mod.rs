@@ -184,7 +184,7 @@ impl Engine {
         path_str.starts_with("\\\\") || path_str.starts_with("//")
     }
 
-    /// 数据目录（`%APPDATA%/PrismVault` 等）。桥接服务读写 `bridge.json` 也要用。
+    /// 数据目录（`%APPDATA%/PrismVault` 等），存 `libraries.json` 等应用级状态。
     pub fn get_data_dir() -> Option<PathBuf> {
         #[cfg(target_os = "windows")]
         {
