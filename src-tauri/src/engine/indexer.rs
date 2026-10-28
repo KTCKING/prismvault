@@ -5,7 +5,10 @@ use walkdir::WalkDir;
 use crate::engine::db::FileEntry;
 use crate::utils::hash;
 
-/// Supported image formats for indexing
+/// Supported formats for indexing.
+///
+/// 视频也收：浏览器扩展摘下来的 mp4/webm 得能在库里看得见。它们不参与缩略图
+/// 生成（没有解码器），卡片上显示的是文件类型图标，双击用系统的播放器打开。
 const SUPPORTED_EXTENSIONS: &[&str] = &[
     "jpg", "jpeg", "png", "gif", "webp", "avif", "heic", "heif",
     "bmp", "tiff", "tif", "ico", "svg", "psd", "ai", "eps",
@@ -14,7 +17,36 @@ const SUPPORTED_EXTENSIONS: &[&str] = &[
     "dcs", "dcr", "drf", "k25", "kdc", "mef", "mos", "mrw", "nrw",
     "obm", "orf", "pef", "ptx", "pxn", "r3d", "raw", "rwl", "srw",
     "x3f",
+    "mp4", "m4v", "webm", "mov", "mkv", "avi", "wmv", "flv", "ogv", "mpg", "mpeg", "3gp",
 ];
+
+/// 判断一个文件是不是 Eagle 条目目录（`<ID>.info/`）里的缩略图。
+///
+/// 两种命名都见过：`thumbnail.png` 与 `<原名>_thumbnail.png`。只在这个特定目录
+/// 结构下生效，否则用户真有一张叫 `cover_thumbnail.jpg` 的图就会被吞掉。
+fn is_eagle_sidecar_thumb(path: &Path) -> bool {
+    let Some(parent) = path.parent() else {
+        return false;
+    };
+    let in_info_dir = parent.components().any(|c| match c {
+        std::path::Component::Normal(s) => {
+            s.to_string_lossy().to_lowercase().ends_with(".info")
+        }
+        _ => false,
+    });
+    if !in_info_dir {
+        return false;
+    }
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    let stem = match name.rsplit_once('.') {
+        Some((s, _)) => s.to_string(),
+        None => name.clone(),
+    };
+    stem == "thumbnail" || stem.ends_with("_thumbnail")
+}
 
 pub struct Indexer {
     progress_tx: Option<mpsc::UnboundedSender<IndexProgress>>,
@@ -71,6 +103,14 @@ impl Indexer {
                 }
             }
             if skip {
+                continue;
+            }
+
+            // Eagle 的条目目录 `<ID>.info` 里，原图旁边还躺着一张缩略图
+            // （`thumbnail.png` 或 `<原名>_thumbnail.png`）。它不是素材，收进图库
+            // 只会让每个条目多出一条「长得一样但很糊」的记录。限定在 `.info` 目录
+            // 内判断，用户自己起名叫 xxx_thumbnail 的文件不受影响。
+            if is_eagle_sidecar_thumb(&path) {
                 continue;
             }
 

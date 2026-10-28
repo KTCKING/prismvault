@@ -284,7 +284,7 @@ export function InfoPanel(props: Props) {
        列数由 auto-fill 自动从 6 列收成 5 列（不再浮层遮挡图片）。 */
     <aside class="info-panel w-[19rem] flex-shrink-0 flex flex-col overflow-hidden animate-slide-in-right">
       {/* 头部 */}
-      <div class="flex items-center h-9 pl-3 pr-1.5 flex-shrink-0" style={{ borderBottom: `1px solid ${s.border}` }}>
+      <div class="flex items-center h-9 pl-3 pr-1.5 flex-shrink-0" style={{ "border-bottom": `1px solid ${s.border}` }}>
         <span class="text-xs font-semibold" style={{ color: s.text }}>文件信息</span>
         <div class="flex-1" />
         <button class="btn-ghost text-2xs px-1.5 py-0.5 flex" title="展开／折叠全部分区"
@@ -376,7 +376,7 @@ export function InfoPanel(props: Props) {
                               </For>
                             </Show>
                           </div>
-                          <div class="flex gap-1 p-1.5" style={{ borderTop: `1px solid ${s.border}` }}>
+                          <div class="flex gap-1 p-1.5" style={{ "border-top": `1px solid ${s.border}` }}>
                             <input class="input flex-1 text-xs py-1" placeholder="新建标签..." value={newTagName()}
                               onInput={(e) => setNewTagName(e.currentTarget.value)}
                               onKeyDown={(e) => { if (e.key === "Enter") handleCreateAndAddTag(); }} />
@@ -441,7 +441,7 @@ export function InfoPanel(props: Props) {
       </Show>
 
       {/* 底部操作 */}
-      <div class="flex gap-1.5 p-2 flex-shrink-0" style={{ borderTop: `1px solid ${s.border}` }}>
+      <div class="flex gap-1.5 p-2 flex-shrink-0" style={{ "border-top": `1px solid ${s.border}` }}>
         <button class="btn-secondary text-2xs flex-1 py-1 flex items-center justify-center gap-1.5" onClick={() => props.filePath && api.openInExplorer(props.filePath)}>
           <IconFolderOpen size={13} />
           显示位置

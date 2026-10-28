@@ -1,7 +1,7 @@
 import { createSignal, createEffect, Show, onMount, onCleanup } from "solid-js";
 import type { FileInfo } from "@/lib/tauri-api";
-import { toDisplaySrc } from "@/lib/thumbs";
-import { IconImage, IconStarFilled } from "@/components/icons";
+import { toDisplaySrc, isVideoPath } from "@/lib/thumbs";
+import { IconImage, IconPlay, IconStarFilled } from "@/components/icons";
 
 interface Props {
   file: FileInfo;
@@ -43,12 +43,13 @@ export function ThumbnailCard(props: Props) {
     return url ? toDisplaySrc(url) : null;
   };
 
+  /** 视频永远没有缩略图（后端不解码视频），卡片自己画一个播放角标。 */
+  const isVideo = () => isVideoPath(props.file.filename || props.file.path);
+
   const [imgSrc, setImgSrc] = createSignal<string | null>(null);
 
   /**
-   * 模糊占位图。32px 的小图铺满整格再叠一层 blur，看起来就是"这张图已经有了、
-   * 正在变清晰"，而不是一片空白 —— 这是体感提升最大的一步：真图还要等几百
-   * 毫秒甚至几秒，但用户从第一帧起就"看见了"。
+   * 模糊占位图。32px 的小图铺满整格，本身已经很糊；真图淡入盖在它上面。
    */
   const placeholderSrc = () => (props.placeholderUrl ? toDisplaySrc(props.placeholderUrl) : undefined);
 
@@ -139,8 +140,23 @@ export function ThumbnailCard(props: Props) {
               onLoad={() => setImgLoaded(true)} onError={handleImgError} />
           )}
         </Show>
-        <Show when={!imgLoaded() && !imgError() && !placeholderSrc()}>
+        <Show when={!imgLoaded() && !imgError() && !placeholderSrc() && !isVideo()}>
           <div class="absolute inset-0 skeleton" />
+        </Show>
+        {/* 视频：不排缩略图任务，用播放角标告诉用户「这张点开能放」 */}
+        <Show when={isVideo() && !imgLoaded()}>
+          <div
+            class="absolute inset-0 flex flex-col items-center justify-center gap-1.5"
+            style={{ background: "var(--bg-tertiary)" }}
+          >
+            <span
+              class="w-8 h-8 rounded-full flex items-center justify-center"
+              style={{ background: "rgba(0,0,0,0.55)", color: "#fff" }}
+            >
+              <IconPlay size={13} />
+            </span>
+            <span class="text-2xs" style={{ color: "var(--text-muted)" }}>视频</span>
+          </div>
         </Show>
         <Show when={imgError()}>
           <div class="absolute inset-0 flex items-center justify-center" style={{ background: "var(--bg-tertiary)" }}>

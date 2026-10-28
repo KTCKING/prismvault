@@ -357,7 +357,66 @@ export interface ImportSummary {
   imported_files: number;
   created_tags: number;
   errors: string[];
+  /** 仅 eaglepack：实际写盘的字节数 */
+  unpacked_bytes?: number;
+  /** 仅 eaglepack：跳过/失败的总数 */
+  skipped?: number;
+  /** 仅 eaglepack：按 Eagle 文件夹层级重组落盘的文件数 */
+  reorganized?: number;
+  /** 仅 eaglepack：因同名被自动加上 `(2)` 序号的个数 */
+  renamed?: number;
   library: LibraryInfo;
+}
+
+/** `probe_eaglepack` 的返回：开包前的统计，只读中央目录，不解压。 */
+export interface PackProbe {
+  /** `pack`（pack.json + <ID>.info/）或 `library`（metadata.json + images/） */
+  layout: string;
+  item_count: number;
+  folder_count: number;
+  entry_count: number;
+  /** 解压后总大小（字节） */
+  unpacked_bytes: number;
+}
+
+/** `eaglepack-progress` 事件的载荷。 */
+export interface PackProgress {
+  /** `unpack` 解压中 / `parse` 解析元数据 / `organize` 按文件夹重组落盘 */
+  phase: "unpack" | "parse" | "organize";
+  done: number;
+  total: number;
+  current: string;
+}
+
+export interface BridgeLibraryRef {
+  id: string;
+  name: string;
+  root_path: string;
+}
+
+export interface BridgeRecentItem {
+  path: string;
+  filename: string;
+  size: number;
+  page: string;
+  at: string;
+  library_id: string;
+}
+
+export interface BridgeStatus {
+  enabled: boolean;
+  port: number;
+  /** 是否真的在监听（端口被占用 / 应用刚启动时为 false） */
+  listening: boolean;
+  bound_port: number;
+  /** 扩展里要填的访问令牌 */
+  token: string;
+  last_error: string;
+  /** 累计请求数 / 累计入库文件数 */
+  requests: number;
+  ingested: number;
+  recent: BridgeRecentItem[];
+  library: BridgeLibraryRef | null;
 }
 
 export interface SearchResult {
@@ -406,8 +465,8 @@ export const api = {
   renameLibrary: (id: string, newName: string) =>
     invoke<void>("rename_library", { id, newName }),
 
-  deleteLibrary: (id: string, deleteFiles: boolean) =>
-    invoke<void>("delete_library", { id, deleteFiles }),
+  deleteLibrary: (id: string, deleteFiles: boolean, confirmName?: string) =>
+    invoke<void>("delete_library", { id, deleteFiles, confirmName }),
 
   getLibraries: () =>
     invoke<LibraryInfo[]>("get_libraries"),
@@ -577,6 +636,36 @@ export const api = {
 
   importPixcallLibrary: (sourcePath: string) =>
     invoke<ImportSummary>("import_pixcall_library", { sourcePath }),
+
+  // ── Eagle 素材包（.eaglepack）────────────────────────
+  /** 开包前先看一眼：布局、条目数、文件夹数、解压后多大。 */
+  probeEaglepack: (packPath: string) =>
+    invoke<PackProbe>("probe_eaglepack", { packPath }),
+
+  /** 流式解压到 destDir，然后把 destDir 当作新图库打开。 */
+  importEaglepack: (packPath: string, destDir: string) =>
+    invoke<ImportSummary>("import_eaglepack", { packPath, destDir }),
+
+  cancelEaglepackImport: () =>
+    invoke<void>("cancel_eaglepack_import"),
+
+  // ── 浏览器扩展桥接 ──────────────────────────────────
+  getBridgeStatus: () => invoke<BridgeStatus>("get_bridge_status"),
+
+  setBridgeEnabled: (enabled: boolean) =>
+    invoke<BridgeStatus>("set_bridge_enabled", { enabled }),
+
+  setBridgePort: (port: number) =>
+    invoke<BridgeStatus>("set_bridge_port", { port }),
+
+  regenerateBridgeToken: () =>
+    invoke<BridgeStatus>("regenerate_bridge_token"),
+
+  /** 把内置扩展写进用户选的目录，返回文件数 */
+  exportExtension: (destDir: string) =>
+    invoke<number>("export_extension", { destDir }),
+
+  revealPath: (path: string) => invoke<void>("reveal_path", { path }),
 
   // Restore
   restoreLibraries: () =>

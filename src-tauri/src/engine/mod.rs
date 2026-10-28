@@ -6,6 +6,7 @@ pub mod watcher;
 pub mod search;
 pub mod dedup;
 pub mod import;
+pub mod eaglepack;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -183,7 +184,8 @@ impl Engine {
         path_str.starts_with("\\\\") || path_str.starts_with("//")
     }
 
-    fn get_data_dir() -> Option<PathBuf> {
+    /// 数据目录（`%APPDATA%/PrismVault` 等）。桥接服务读写 `bridge.json` 也要用。
+    pub fn get_data_dir() -> Option<PathBuf> {
         #[cfg(target_os = "windows")]
         {
             std::env::var("APPDATA")

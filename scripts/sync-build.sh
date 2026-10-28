@@ -20,7 +20,7 @@ fi
 
 echo "==> 同步 $ROOT_DIR → $DEST"
 
-mkdir -p "$DEST/src" "$DEST/src-tauri/src" "$DEST/scripts"
+mkdir -p "$DEST/src" "$DEST/src-tauri/src" "$DEST/scripts" "$DEST/patches"
 
 # 前端源码
 cp -r "$ROOT_DIR/src/." "$DEST/src/"
@@ -28,13 +28,33 @@ cp -r "$ROOT_DIR/src/." "$DEST/src/"
 # 后端源码
 cp -r "$ROOT_DIR/src-tauri/src/." "$DEST/src-tauri/src/"
 
+# 开发用示例（cargo run --example packcheck 验证 eaglepack 解包）。
+# 不进安装包，但不带过去的话在构建目录里根本编不出来。
+mkdir -p "$DEST/src-tauri/examples"
+cp -rf "$ROOT_DIR/src-tauri/examples/." "$DEST/src-tauri/examples/" 2>/dev/null || true
+
+# 浏览器扩展源码：`bridge.rs` 用 include_str! 把整个扩展编进二进制（「导出扩展」
+# 功能靠它），所以构建目录里必须有一份，否则 Rust 编译直接报找不到文件。
+mkdir -p "$DEST/extension"
+cp -rf "$ROOT_DIR/extension/." "$DEST/extension/"
+
+# Cargo patch（[patch.crates-io] 依赖它，漏同步 → cargo 报
+# "unable to update patches/indexmap-1.9.3 / 系统找不到指定的路径"）
+cp -rf "$ROOT_DIR/patches/." "$DEST/patches/" 2>/dev/null || true
+
 # 配置文件与图标
 cp -f "$ROOT_DIR/src-tauri/tauri.conf.json" \
       "$ROOT_DIR/src-tauri/tauri.windows.conf.json" \
       "$ROOT_DIR/src-tauri/tauri.macos.conf.json" \
       "$ROOT_DIR/src-tauri/app-icon.svg" \
       "$ROOT_DIR/src-tauri/Cargo.toml" \
+      "$ROOT_DIR/src-tauri/build.rs" \
+      "$ROOT_DIR/src-tauri/WebView2Loader.dll" \
       "$DEST/src-tauri/" 2>/dev/null || true
+
+# Tauri 权限配置（capabilities 改了不同步 → 打包版用旧权限）
+rm -rf "$DEST/src-tauri/capabilities"
+cp -r "$ROOT_DIR/src-tauri/capabilities" "$DEST/src-tauri/"
 
 rm -rf "$DEST/src-tauri/icons"
 cp -r "$ROOT_DIR/src-tauri/icons" "$DEST/src-tauri/"

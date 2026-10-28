@@ -335,19 +335,37 @@ export function ContextMenu() {
           const lib = library.libraries().find((l) => l.id === t.libraryId);
           close();
           if (!lib) return;
-          ui.requestConfirm({
-            title: "删除库",
-            message: `确定要彻底删除库「${lib.name}」吗？\n\n这将永久删除该文件夹下的所有文件（含 .prism 数据），且无法恢复！`,
+          // 这一步删的是用户自己的文件夹，而且不进回收站 —— 一个「确定」
+          // 按钮扛不住手滑，要求逐字输入库名才执行（后端也会复核）。
+          ui.requestPrompt({
+            title: `删除库「${lib.name}」`,
+            message:
+              `会永久删除下面这个文件夹` +
+              (lib.file_count > 0 ? `连同里面的 ${lib.file_count} 个文件` : "") +
+              "，不进回收站、无法恢复：\n" +
+              `${lib.root_path}\n\n` +
+              "如果这是原地读取的 Eagle / Pixcall 库，删掉的就是你原本的素材目录。\n" +
+              `确认请原样输入库名「${lib.name}」；只想让它从列表消失，请改用「从列表移除」。`,
+            placeholder: "输入库名以确认",
             confirmText: "永久删除",
-            danger: true,
-            onConfirm: async () => {
-              await api.deleteLibrary(t.libraryId, true);
-              library.setLibraries(library.libraries().filter((l) => l.id !== t.libraryId));
-              if (library.activeLibraryId() === t.libraryId) {
-                library.setActiveLibraryId(library.libraries()[0]?.id ?? null);
+            onSubmit: async (input) => {
+              if (input.trim() !== lib.name) {
+                ui.showToast("库名不匹配，已取消", "error");
+                return;
               }
-              files.loadFiles(0);
-              ui.showToast("库已删除");
+              try {
+                await api.deleteLibrary(lib.id, true, lib.name);
+                const rest = library.libraries().filter((l) => l.id !== lib.id);
+                library.setLibraries(rest);
+                if (library.activeLibraryId() === lib.id) {
+                  library.setActiveLibraryId(rest[0]?.id ?? null);
+                }
+                files.loadFiles(0);
+                tags.loadTags();
+                ui.showToast(`已删除库「${lib.name}」及其文件`);
+              } catch (e) {
+                ui.showToast(typeof e === "string" ? e : "删除失败", "error");
+              }
             },
           });
         },
@@ -371,7 +389,7 @@ export function ContextMenu() {
         <For each={buildItems()}>
           {(item) =>
             item.divider ? (
-              <div class="my-1" style={{ borderTop: "1px solid var(--border-color)" }} />
+              <div class="my-1" style={{ "border-top": "1px solid var(--border-color)" }} />
             ) : (
               <button
                 class="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-left transition-colors"
