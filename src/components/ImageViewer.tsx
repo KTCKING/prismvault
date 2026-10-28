@@ -172,7 +172,7 @@ export function ImageViewer() {
               >
                 这个视频容器浏览器内核解不了（{file()?.extension}）。
                 <br />
-                在卡片上右键「用系统播放器打开」，或换成 mp4 / webm 再摘取。
+                在卡片上右键「用系统播放器打开」，或换成 mp4 / webm 再导入。
               </div>
             }
           >

@@ -259,15 +259,6 @@ export function IconVideo(p: IconProps) {
   );
 }
 
-/** 拼图块：浏览器扩展 / 插件类功能的通用符号。 */
-export function IconPuzzle(p: IconProps) {
-  return (
-    <Svg {...p}>
-      <path d="M9.5 4.2a2.3 2.3 0 1 1 4.6 0V5h3.3a1 1 0 0 1 1 1v3.3h-.8a2.3 2.3 0 1 0 0 4.6h.8V18a1 1 0 0 1-1 1h-3.3v-.8a2.3 2.3 0 1 0-4.6 0V19H6.2a1 1 0 0 1-1-1v-3.3h.8a2.3 2.3 0 1 0 0-4.6h-.8V6a1 1 0 0 1 1-1h3.3z" />
-    </Svg>
-  );
-}
-
 export function IconSettings(p: IconProps) {
   return (
     <Svg {...p}>
